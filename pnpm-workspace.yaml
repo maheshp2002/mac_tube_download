@@ -1,4 +1,3 @@
 allowBuilds:
   ffmpeg-static: true
   unrs-resolver: true
-  yt-dlp-exec: true

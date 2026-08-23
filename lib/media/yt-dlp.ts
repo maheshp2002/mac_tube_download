@@ -1,4 +1,4 @@
-import { create as createYtDlp } from "yt-dlp-exec";
+import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import type { MediaFormat, MediaMetadata } from "./types";
@@ -20,8 +20,8 @@ type RawThumbnail = { url?: string; width?: number; height?: number };
 type RawInfo = { id?: string | number; webpage_url?: string; title?: string; uploader?: string; channel?: string; duration?: number; thumbnail?: string; thumbnails?: RawThumbnail[]; formats?: RawFormat[] };
 
 export async function inspectMedia(url: string): Promise<MediaMetadata> {
-  const info = await createYtDlp(resolveYtDlpBinary())(url, { dumpSingleJson: true, noWarnings: true, noPlaylist: true, skipDownload: true, preferFreeFormats: true });
-  const raw = info as RawInfo;
+  const result = await runYtDlp(url, { dumpSingleJson: true, noWarnings: true, noPlaylist: true, skipDownload: true, preferFreeFormats: true });
+  const raw = JSON.parse(result.stdout) as RawInfo;
   const rawFormats = Array.isArray(raw.formats) ? raw.formats : [];
   const formats = selectFormats(rawFormats);
   if (!formats.length) throw new Error("Media unavailable. The source did not expose a downloadable video or audio stream.");
@@ -56,18 +56,46 @@ function score(format: MediaFormat) {
 }
 
 export async function runYtDlp(url: string, flags: Record<string, unknown>, options?: Record<string, unknown>) {
-  try {
-    return await createYtDlp(resolveYtDlpBinary()).exec(url, flags as never, options as never);
-  } catch (error) {
-    const detail = error instanceof Error ? error.message : "yt-dlp exited unexpectedly";
-    if (/enoent|not found|cannot find/i.test(detail)) throw new Error("The local media engine is not installed correctly. Reinstall dependencies with pnpm install and try again.");
-    throw error;
-  }
+  const binary = resolveYtDlpBinary();
+  const args = [...flagArguments(flags), url];
+  const signal = isAbortSignal(options?.signal) ? options.signal : undefined;
+  return new Promise<{ stdout: string; stderr: string }>((resolve, reject) => {
+    const child = spawn(binary, args, { stdio: ["ignore", "pipe", "pipe"], signal });
+    let stdout = "";
+    let stderr = "";
+    child.stdout.on("data", (chunk: Buffer) => { stdout += chunk.toString(); });
+    child.stderr.on("data", (chunk: Buffer) => { stderr += chunk.toString(); });
+    child.on("error", (error) => {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return reject(new Error("The standalone yt-dlp binary is missing. Run pnpm install and try again."));
+      reject(error);
+    });
+    child.on("close", (code) => {
+      if (signal?.aborted) return reject(new Error("Download cancelled."));
+      if (code === 0) return resolve({ stdout, stderr });
+      reject(new Error(stderr.trim() || `yt-dlp exited with code ${code ?? "unknown"}.`));
+    });
+  });
 }
 
 function resolveYtDlpBinary() {
   const filename = process.platform === "win32" ? "yt-dlp.exe" : "yt-dlp";
-  const localPath = join(process.cwd(), "node_modules", "yt-dlp-exec", "bin", filename);
+  const localPath = join(process.cwd(), "vendor", "yt-dlp", filename);
   if (existsSync(localPath)) return localPath;
-  throw new Error("The local media engine is not installed correctly. Reinstall dependencies with pnpm install and try again.");
+  throw new Error("The standalone yt-dlp binary is missing. Run pnpm install and try again.");
+}
+
+function flagArguments(flags: Record<string, unknown>) {
+  const args: string[] = [];
+  for (const [key, value] of Object.entries(flags)) {
+    if (value === undefined || value === null || value === false) continue;
+    const flag = `--${key.replace(/[A-Z]/g, (letter) => `-${letter.toLowerCase()}`)}`;
+    if (value === true) args.push(flag);
+    else if (Array.isArray(value)) for (const item of value) args.push(flag, String(item));
+    else args.push(flag, String(value));
+  }
+  return args;
+}
+
+function isAbortSignal(value: unknown): value is AbortSignal {
+  return typeof value === "object" && value !== null && "aborted" in value && "addEventListener" in value;
 }
