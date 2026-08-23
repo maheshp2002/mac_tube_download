@@ -2,10 +2,12 @@ export type MediaFormat = {
   id: string;
   label: string;
   ext: string;
+  protocol?: string;
   width?: number;
   height?: number;
   hasAudio: boolean;
   audioOnly?: boolean;
+  requiresFfmpeg?: boolean;
   size?: number;
   note?: string;
 };

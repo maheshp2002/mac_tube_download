@@ -11,7 +11,9 @@ pnpm dev
 
 Open [http://localhost:3000](http://localhost:3000). The binary dependencies are installed through pnpm; the app downloads the standalone yt-dlp executable and does not require Python or a global FFmpeg/yt-dlp install.
 
-The extractor can handle supported sites such as YouTube, Instagram, Facebook, and many more. It can also process public direct media URLs and manifests. DRM-protected streams, private/login-only pages, expiring URLs, and sites that actively block server-side access may still require credentials or may not be downloadable.
+The extractor can handle supported sites such as YouTube, Instagram, Facebook, and many more. It can also process public direct media URLs and manifests. Progressive single-file formats are resolved to their original stream and downloaded directly by the browser without starting FFmpeg. Video-only formats, HLS/DASH manifests, and MP3 conversion use FFmpeg when muxing or conversion is required.
+
+On Vercel, direct progressive downloads avoid the Function response proxy, so large files can be handed to the browser without passing through the serverless response. Processed files still depend on Vercel’s 4.5 MB Function response limit; choose a progressive format for large downloads or use a host with file storage. DRM-protected streams, private/login-only pages, expiring URLs, and sites that actively block server-side access may still require credentials or may not be downloadable.
 
 ## Routes
 

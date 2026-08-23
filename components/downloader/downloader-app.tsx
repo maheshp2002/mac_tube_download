@@ -44,7 +44,7 @@ function Icon({ name, size = 18, stroke = 1.8 }: { name: IconName; size?: number
   return <svg {...common}>{paths[name]}</svg>;
 }
 
-type Format = { id: string; label: string; ext: string; width?: number; height?: number; hasAudio: boolean; audioOnly?: boolean; size?: number; note?: string };
+type Format = { id: string; label: string; ext: string; protocol?: string; width?: number; height?: number; hasAudio: boolean; audioOnly?: boolean; requiresFfmpeg?: boolean; size?: number; note?: string };
 type Media = { id: string; sourceUrl: string; title: string; author?: string; duration?: number; thumbnail?: string; thumbnailWidth?: number; thumbnailHeight?: number; formats: Format[] };
 type HistoryItem = { id: string; title: string; format: string; detail: string; size: string; thumbnail?: string; createdAt: string };
 type JobState = "idle" | "inspecting" | "downloading" | "processing" | "complete" | "error";
@@ -69,6 +69,7 @@ function formatBytes(bytes?: number) {
   if (bytes > 1024 ** 3) return `${(bytes / 1024 ** 3).toFixed(1)} GB`;
   return `${(bytes / 1024 ** 2).toFixed(bytes > 10 * 1024 ** 2 ? 0 : 1)} MB`;
 }
+function triggerBrowserDownload(url: string, filename: string) { const anchor = document.createElement("a"); anchor.href = url; anchor.download = filename; if (/^https?:\/\//i.test(url)) { anchor.target = "_blank"; anchor.rel = "noreferrer"; } document.body.appendChild(anchor); anchor.click(); anchor.remove(); }
 function hostFromUrl(url: string) { try { return new URL(url).hostname.replace(/^www\./, ""); } catch { return "media source"; } }
 function isUrl(value: string) { try { const parsed = new URL(value); return ["http:", "https:"].includes(parsed.protocol) && Boolean(parsed.hostname); } catch { return false; } }
 function bestFormat(media?: Media) { return media?.formats.find((format) => !format.audioOnly) ?? media?.formats[0]; }
@@ -102,12 +103,19 @@ export default function DownloaderApp() {
     if (!media) return; const formatForDownload = formatOverride ?? chosenFormat; setError(undefined); setJobState(kind === "audio" ? "processing" : "downloading"); setProgress(4); setJobMessage(kind === "thumbnail" ? "Fetching thumbnail…" : kind === "audio" ? "Converting audio…" : "Fetching media…");
     const controller = new AbortController(); abortRef.current = controller;
     try {
-      const endpoint = kind === "thumbnail" ? "/api/thumbnail" : "/api/download"; const body = kind === "thumbnail" ? { url: media.sourceUrl } : { url: media.sourceUrl, title: media.title, formatId: formatForDownload?.id, hasAudio: formatForDownload?.hasAudio, type: kind, bitrate: selectedAudio };
+      const endpoint = kind === "thumbnail" ? "/api/thumbnail" : "/api/download"; const body = kind === "thumbnail" ? { url: media.sourceUrl } : { url: media.sourceUrl, title: media.title, formatId: formatForDownload?.id, ext: formatForDownload?.ext, protocol: formatForDownload?.protocol, hasAudio: formatForDownload?.hasAudio, requiresFfmpeg: formatForDownload?.requiresFfmpeg, type: kind, bitrate: selectedAudio };
       const response = await fetch(endpoint, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body), signal: controller.signal });
       if (!response.ok) { const result = await response.json().catch(() => ({ message: "The local server could not prepare this download." })); throw new Error(result.message ?? "The local server could not prepare this download."); }
-      const total = Number(response.headers.get("content-length") ?? 0); const reader = response.body?.getReader(); if (!reader) throw new Error("The source returned an empty file."); const chunks: Uint8Array[] = []; let received = 0;
-      while (true) { const { done, value } = await reader.read(); if (done) break; if (value) { chunks.push(value); received += value.length; if (total) setProgress(Math.min(96, Math.round((received / total) * 100))); } }
-      const output = new ArrayBuffer(received); const merged = new Uint8Array(output); let offset = 0; chunks.forEach((chunk) => { merged.set(chunk, offset); offset += chunk.byteLength; }); const blob = new Blob([output], { type: response.headers.get("content-type") ?? "application/octet-stream" }); const objectUrl = URL.createObjectURL(blob); const anchor = document.createElement("a"); anchor.href = objectUrl; anchor.download = response.headers.get("content-disposition")?.match(/filename="?([^";]+)"?/i)?.[1] ?? `${media.title.replace(/[^a-z0-9]+/gi, "-").toLowerCase()}.${kind === "audio" ? "mp3" : kind === "thumbnail" ? "jpg" : formatForDownload?.ext.toLowerCase() ?? "mp4"}`; document.body.appendChild(anchor); anchor.click(); anchor.remove(); URL.revokeObjectURL(objectUrl);
+      const fallbackFilename = `${media.title.replace(/[^a-z0-9]+/gi, "-").toLowerCase()}.${kind === "audio" ? "mp3" : kind === "thumbnail" ? "jpg" : formatForDownload?.ext.toLowerCase() ?? "mp4"}`;
+      if (response.headers.get("content-type")?.includes("application/json")) {
+        const result = await response.json() as { directUrl?: unknown; filename?: unknown };
+        if (typeof result.directUrl !== "string") throw new Error("The source did not return a direct download URL.");
+        triggerBrowserDownload(result.directUrl, typeof result.filename === "string" ? result.filename : fallbackFilename);
+      } else {
+        const total = Number(response.headers.get("content-length") ?? 0); const reader = response.body?.getReader(); if (!reader) throw new Error("The source returned an empty file."); const chunks: Uint8Array[] = []; let received = 0;
+        while (true) { const { done, value } = await reader.read(); if (done) break; if (value) { chunks.push(value); received += value.length; if (total) setProgress(Math.min(96, Math.round((received / total) * 100))); } }
+        const output = new ArrayBuffer(received); const merged = new Uint8Array(output); let offset = 0; chunks.forEach((chunk) => { merged.set(chunk, offset); offset += chunk.byteLength; }); const blob = new Blob([output], { type: response.headers.get("content-type") ?? "application/octet-stream" }); const objectUrl = URL.createObjectURL(blob); triggerBrowserDownload(objectUrl, response.headers.get("content-disposition")?.match(/filename="?([^";]+)"?/i)?.[1] ?? fallbackFilename); URL.revokeObjectURL(objectUrl);
+      }
       setProgress(100); setJobState("complete"); setJobMessage(kind === "audio" ? "MP3 is ready" : kind === "thumbnail" ? "Thumbnail is ready" : "Your file is ready"); const detail = kind === "audio" ? `MP3 • ${selectedAudio} kbps` : kind === "thumbnail" ? "JPG • Original" : `${formatForDownload?.label ?? "Best quality"} • ${formatForDownload?.ext ?? "MP4"}`; saveHistory({ id: `${media.id}-${kind}-${Date.now()}`, title: media.title, format: kind === "audio" ? "MP3" : kind === "thumbnail" ? "JPG" : formatForDownload?.ext ?? "MP4", detail, size: kind === "audio" ? `${audioOptions.find((item) => item.id === selectedAudio)?.size ?? "—"}` : formatBytes(formatForDownload?.size), thumbnail: media.thumbnail, createdAt: new Date().toISOString() }); setToast("Download saved to your browser’s downloads");
     } catch (cause) { if (cause instanceof DOMException && cause.name === "AbortError") { setJobState("idle"); setJobMessage("Download cancelled"); setToast("Download cancelled"); } else { setJobState("error"); setError({ message: cause instanceof Error ? cause.message : "The download could not be completed.", details: "No file was saved. Temporary files are cleaned up automatically by the local server." }); } }
     finally { abortRef.current = undefined; }

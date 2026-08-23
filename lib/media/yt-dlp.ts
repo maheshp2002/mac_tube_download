@@ -85,8 +85,8 @@ function selectFormats(rawFormats: RawFormat[]): MediaFormat[] {
     const audioOnly = !hasVideo && hasAudio;
     if (!height) continue;
     const normalized: MediaFormat = {
-      id: String(format.format_id), label: `${height}p`, ext: (format.ext ?? "bin").toUpperCase(), width: format.width, height,
-      hasAudio, audioOnly, size: format.filesize ?? format.filesize_approx, note: format.format_note,
+      id: String(format.format_id), label: `${height}p`, ext: (format.ext ?? "bin").toUpperCase(), protocol: format.protocol, width: format.width, height,
+      hasAudio, audioOnly, requiresFfmpeg: requiresFfmpeg(format, audioOnly, hasAudio), size: format.filesize ?? format.filesize_approx, note: format.format_note,
     };
     const key = audioOnly ? `audio-${format.format_id}` : `video-${height}`;
     const current = byHeight.get(key);
@@ -98,8 +98,8 @@ function selectFormats(rawFormats: RawFormat[]): MediaFormat[] {
     const audioOnly = !hasVideo && hasAudio;
     if (format.height || (!hasVideo && !hasAudio)) continue;
     const normalized: MediaFormat = {
-      id: String(format.format_id), label: audioOnly ? `${Math.round(format.abr ?? format.tbr ?? 0)} kbps` : "Original", ext: (format.ext ?? "bin").toUpperCase(),
-      width: format.width, height: format.height, hasAudio, audioOnly, size: format.filesize ?? format.filesize_approx, note: format.format_note,
+      id: String(format.format_id), label: audioOnly ? `${Math.round(format.abr ?? format.tbr ?? 0)} kbps` : "Original", ext: (format.ext ?? "bin").toUpperCase(), protocol: format.protocol,
+      width: format.width, height: format.height, hasAudio, audioOnly, requiresFfmpeg: requiresFfmpeg(format, audioOnly, hasAudio), size: format.filesize ?? format.filesize_approx, note: format.format_note,
     };
     const key = audioOnly ? `audio-${format.format_id}` : `video-original-${format.ext ?? format.format_id}`;
     const current = byHeight.get(key);
@@ -127,6 +127,15 @@ function hasAudioStream(format: RawFormat) {
   return Boolean((format.acodec && format.acodec !== "none") || (format.audio_ext && format.audio_ext !== "none"));
 }
 
+function requiresFfmpeg(format: RawFormat, audioOnly: boolean, hasAudio: boolean) {
+  const opaqueDirectFile = isDirectProtocol(format.protocol) && !format.vcodec && !format.acodec && Boolean(format.video_ext);
+  return !audioOnly && !opaqueDirectFile && (!hasAudio || !isDirectProtocol(format.protocol));
+}
+
+function isDirectProtocol(protocol?: string) {
+  return protocol === "http" || protocol === "https";
+}
+
 async function inspectWithFallback(url: string) {
   const flags = { dumpSingleJson: true, noWarnings: true, noPlaylist: true, skipDownload: true, preferFreeFormats: true };
   try {
@@ -140,6 +149,15 @@ async function inspectWithFallback(url: string) {
       throw new Error(`${firstMessage} Generic fallback: ${fallbackMessage}`);
     }
   }
+}
+
+export async function resolveDirectMediaUrl(url: string, formatId: string) {
+  const result = await runYtDlp(url, { getUrl: true, noWarnings: true, noPlaylist: true, noProgress: true, quiet: true, format: formatId });
+  const urls = result.stdout.split(/\r?\n/).map((value) => value.trim()).filter(Boolean);
+  if (urls.length !== 1) throw new Error("This source returned multiple stream URLs and needs server-side processing.");
+  const resolved = new URL(urls[0]);
+  if (!isDirectProtocol(resolved.protocol.replace(":", ""))) throw new Error("The source did not return a direct HTTP stream.");
+  return resolved.toString();
 }
 
 export async function runYtDlp(url: string, flags: Record<string, unknown>, options?: Record<string, unknown>) {
