@@ -1,4 +1,4 @@
-import { inspectMedia } from "@/lib/media/yt-dlp";
+import { inspectMedia } from "@/lib/media/backend";
 import { validateMediaUrl } from "@/lib/validation/url";
 
 export const runtime = "nodejs";

@@ -1,6 +1,8 @@
 import type { NextConfig } from "next";
 
-const nextConfig: NextConfig = {
+const serverMode = process.env.MEDIA_MODE?.trim().toLowerCase() === "server" || Boolean(process.env.VERCEL);
+
+const nextConfig: NextConfig = serverMode ? {} : {
   outputFileTracingIncludes: {
     "/api/metadata": ["./vendor/yt-dlp/**/*"],
     "/api/thumbnail": ["./vendor/yt-dlp/**/*"],

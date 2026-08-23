@@ -5,7 +5,7 @@ import { basename, join } from "node:path";
 import { Readable } from "node:stream";
 import { getFfmpegPath } from "@/lib/ffmpeg/process";
 import { acquireDownloadSlot } from "@/lib/downloads/limiter";
-import { resolveDirectMediaUrl, runYtDlp } from "@/lib/media/yt-dlp";
+import { getMediaMode, resolveDirectMediaUrl, runYtDlp } from "@/lib/media/backend";
 import { safeFilename, validateMediaUrl } from "@/lib/validation/url";
 
 export const runtime = "nodejs";
@@ -41,6 +41,13 @@ export async function POST(request: Request) {
     const requestedExtension = safeExtension(body.ext, type === "audio" ? "mp3" : "mp4");
     releaseSlot = await acquireDownloadSlot();
     if (request.signal.aborted) throw new Error("Download cancelled.");
+
+    if (getMediaMode() === "server") {
+      if (type === "audio") throw new Error("Server mode supports direct media files only. MP3 conversion is available in local mode.");
+      const directUrl = await resolveDirectMediaUrl(source.toString(), formatId);
+      const proxyUrl = `/api/media-proxy?target=${encodeURIComponent(directUrl)}&referer=${encodeURIComponent(source.toString())}`;
+      return Response.json({ direct: true, proxy: true, proxyUrl, filename: `${safeFilename(title)}.${requestedExtension}`, contentType: mimeFor(requestedExtension) }, { headers: { "Cache-Control": "no-store" } });
+    }
 
     if (type === "video" && !requiresFfmpeg && formatId && isDirectProtocol(protocol)) {
       const directUrl = await resolveDirectMediaUrl(source.toString(), formatId);

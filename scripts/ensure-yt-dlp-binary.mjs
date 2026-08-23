@@ -1,9 +1,15 @@
 import { spawn } from "node:child_process";
+import { readFileSync } from "node:fs";
 import { chmod, mkdir, stat, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const projectRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
+if (getConfiguredMediaMode(projectRoot) === "server") {
+  console.log("[media] Server mode enabled; skipping the yt-dlp binary.");
+  process.exit(0);
+}
+
 const platformAsset = getPlatformAsset();
 const minimumVersion = "2026.02.04";
 const binaryName = process.platform === "win32" ? "yt-dlp.exe" : "yt-dlp";
@@ -102,4 +108,23 @@ function compareVersions(left, right) {
     if (difference) return difference;
   }
   return 0;
+}
+
+function getConfiguredMediaMode(root) {
+  const configured = process.env.MEDIA_MODE?.trim().toLowerCase() ?? readMediaModeFromEnvFiles(root);
+  if (configured === "local" || configured === "server") return configured;
+  return process.env.VERCEL ? "server" : "local";
+}
+
+function readMediaModeFromEnvFiles(root) {
+  for (const filename of [".env.local", ".env"]) {
+    try {
+      const contents = readFileSync(join(root, filename), "utf8");
+      const value = contents.match(/^\s*MEDIA_MODE\s*=\s*(?:"([^"]+)"|'([^']+)'|([^\s#]+))/m);
+      if (value) return (value[1] ?? value[2] ?? value[3]).trim().toLowerCase();
+    } catch {
+      // The env file is optional; Vercel variables and normal process env take precedence.
+    }
+  }
+  return undefined;
 }

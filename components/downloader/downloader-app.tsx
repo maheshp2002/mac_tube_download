@@ -70,6 +70,20 @@ function formatBytes(bytes?: number) {
   return `${(bytes / 1024 ** 2).toFixed(bytes > 10 * 1024 ** 2 ? 0 : 1)} MB`;
 }
 function triggerBrowserDownload(url: string, filename: string) { const anchor = document.createElement("a"); anchor.href = url; anchor.download = filename; if (/^https?:\/\//i.test(url)) { anchor.target = "_blank"; anchor.rel = "noreferrer"; } document.body.appendChild(anchor); anchor.click(); anchor.remove(); }
+const MEDIA_PROXY_CHUNK_SIZE = 3_500_000;
+async function downloadProxiedFile(url: string, contentType: string, signal: AbortSignal, onProgress: (value: number) => void) {
+  const chunks: ArrayBuffer[] = []; let start = 0; let total: number | undefined;
+  for (let count = 0; count < 256 && (total === undefined || start < total); count += 1) {
+    const end = total === undefined ? start + MEDIA_PROXY_CHUNK_SIZE - 1 : Math.min(total - 1, start + MEDIA_PROXY_CHUNK_SIZE - 1);
+    const response = await fetch(url, { headers: { Range: `bytes=${start}-${end}` }, signal });
+    if (!response.ok) { const result = await response.json().catch(() => undefined) as { message?: string } | undefined; throw new Error(result?.message ?? "The server could not fetch this media chunk."); }
+    const chunk = await response.arrayBuffer(); if (!chunk.byteLength) throw new Error("The server returned an empty media chunk."); chunks.push(chunk); start += chunk.byteLength;
+    const range = response.headers.get("content-range")?.match(/bytes\s+\d+-\d+\/(\d+)/i); if (range) total = Number(range[1]);
+    if (total) onProgress(Math.min(96, 4 + Math.round((start / total) * 92))); else if (chunk.byteLength < MEDIA_PROXY_CHUNK_SIZE) total = start;
+  }
+  if (total === undefined || start < total) throw new Error("The server media download exceeded the supported range count.");
+  return new Blob(chunks, { type: contentType || "application/octet-stream" });
+}
 function hostFromUrl(url: string) { try { return new URL(url).hostname.replace(/^www\./, ""); } catch { return "media source"; } }
 function isUrl(value: string) { try { const parsed = new URL(value); return ["http:", "https:"].includes(parsed.protocol) && Boolean(parsed.hostname); } catch { return false; } }
 function bestFormat(media?: Media) { return media?.formats.find((format) => !format.audioOnly) ?? media?.formats[0]; }
@@ -108,9 +122,14 @@ export default function DownloaderApp() {
       if (!response.ok) { const result = await response.json().catch(() => ({ message: "The local server could not prepare this download." })); throw new Error(result.message ?? "The local server could not prepare this download."); }
       const fallbackFilename = `${media.title.replace(/[^a-z0-9]+/gi, "-").toLowerCase()}.${kind === "audio" ? "mp3" : kind === "thumbnail" ? "jpg" : formatForDownload?.ext.toLowerCase() ?? "mp4"}`;
       if (response.headers.get("content-type")?.includes("application/json")) {
-        const result = await response.json() as { directUrl?: unknown; filename?: unknown };
-        if (typeof result.directUrl !== "string") throw new Error("The source did not return a direct download URL.");
-        triggerBrowserDownload(result.directUrl, typeof result.filename === "string" ? result.filename : fallbackFilename);
+        const result = await response.json() as { directUrl?: unknown; proxyUrl?: unknown; contentType?: unknown; filename?: unknown };
+        const filename = typeof result.filename === "string" ? result.filename : fallbackFilename;
+        if (typeof result.proxyUrl === "string") {
+          const blob = await downloadProxiedFile(result.proxyUrl, typeof result.contentType === "string" ? result.contentType : "", controller.signal, setProgress);
+          const objectUrl = URL.createObjectURL(blob); triggerBrowserDownload(objectUrl, filename); window.setTimeout(() => URL.revokeObjectURL(objectUrl), 30_000);
+        } else if (typeof result.directUrl === "string") {
+          triggerBrowserDownload(result.directUrl, filename);
+        } else throw new Error("The source did not return a direct download URL.");
       } else {
         const total = Number(response.headers.get("content-length") ?? 0); const reader = response.body?.getReader(); if (!reader) throw new Error("The source returned an empty file."); const chunks: Uint8Array[] = []; let received = 0;
         while (true) { const { done, value } = await reader.read(); if (done) break; if (value) { chunks.push(value); received += value.length; if (total) setProgress(Math.min(96, Math.round((received / total) * 100))); } }
