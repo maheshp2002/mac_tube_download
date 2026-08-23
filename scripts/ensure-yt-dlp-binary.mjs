@@ -12,32 +12,48 @@ if (await isUsableBinary(binaryPath)) {
   process.exit(0);
 }
 
-const releaseResponse = await fetch("https://api.github.com/repos/yt-dlp/yt-dlp/releases/latest", {
-  headers: { Accept: "application/vnd.github+json", "User-Agent": "localdrop-build" },
-});
-if (!releaseResponse.ok) {
-  throw new Error(`[media] Could not inspect the latest yt-dlp release (${releaseResponse.status}).`);
-}
-
-const release = await releaseResponse.json();
-const asset = Array.isArray(release.assets)
-  ? release.assets.find((item) => item?.name === platformAsset)
-  : undefined;
-if (!asset?.browser_download_url) {
-  throw new Error(`[media] The latest yt-dlp release does not contain ${platformAsset}.`);
-}
-
-const binaryResponse = await fetch(asset.browser_download_url, {
+const assetUrl = await resolveAssetUrl(platformAsset);
+const binaryResponse = await fetch(assetUrl, {
   headers: { "User-Agent": "localdrop-build" },
 });
 if (!binaryResponse.ok) {
   throw new Error(`[media] Could not download ${platformAsset} (${binaryResponse.status}).`);
 }
 
+const binary = Buffer.from(await binaryResponse.arrayBuffer());
+if (binary.length <= 1_000_000) {
+  throw new Error(`[media] Downloaded ${platformAsset} is unexpectedly small (${binary.length} bytes).`);
+}
+
 await mkdir(dirname(binaryPath), { recursive: true });
-await writeFile(binaryPath, Buffer.from(await binaryResponse.arrayBuffer()), { mode: 0o755 });
+await writeFile(binaryPath, binary, { mode: 0o755 });
 if (process.platform !== "win32") await chmod(binaryPath, 0o755);
 console.log(`[media] Installed standalone ${platformAsset} at ${binaryPath}.`);
+
+async function resolveAssetUrl(assetName) {
+  const directAssetUrl = `https://github.com/yt-dlp/yt-dlp/releases/latest/download/${encodeURIComponent(assetName)}`;
+
+  try {
+    const releaseResponse = await fetch("https://api.github.com/repos/yt-dlp/yt-dlp/releases/latest", {
+      headers: { Accept: "application/vnd.github+json", "User-Agent": "localdrop-build" },
+    });
+
+    if (releaseResponse.ok) {
+      const release = await releaseResponse.json();
+      const asset = Array.isArray(release.assets)
+        ? release.assets.find((item) => item?.name === assetName)
+        : undefined;
+      if (asset?.browser_download_url) return asset.browser_download_url;
+      console.warn(`[media] The latest release did not list ${assetName}; using the direct release URL.`);
+    } else {
+      console.warn(`[media] Release API unavailable (${releaseResponse.status}); using the direct release URL.`);
+    }
+  } catch (error) {
+    console.warn(`[media] Could not inspect the release API; using the direct release URL.`, error);
+  }
+
+  return directAssetUrl;
+}
 
 function getPlatformAsset() {
   if (process.platform === "linux" && process.arch === "x64") return "yt-dlp_linux";
