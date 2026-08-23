@@ -10,7 +10,7 @@ import { safeFilename, validateMediaUrl } from "@/lib/validation/url";
 
 export const runtime = "nodejs";
 
-type DownloadRequest = { url?: unknown; title?: unknown; formatId?: unknown; type?: unknown; bitrate?: unknown };
+type DownloadRequest = { url?: unknown; title?: unknown; formatId?: unknown; hasAudio?: unknown; type?: unknown; bitrate?: unknown };
 
 export async function POST(request: Request) {
   let tempDirectory: string | undefined;
@@ -21,6 +21,7 @@ export async function POST(request: Request) {
     const source = validateMediaUrl(body.url);
     const type = body.type === "audio" ? "audio" : "video";
     const formatId = typeof body.formatId === "string" && /^[a-zA-Z0-9._+/-]+$/.test(body.formatId) ? body.formatId : undefined;
+    const hasAudio = body.hasAudio === true;
     const bitrate = typeof body.bitrate === "string" && /^(96|128|192|256|320)$/.test(body.bitrate) ? body.bitrate : "320";
     releaseSlot = await acquireDownloadSlot();
     if (request.signal.aborted) throw new Error("Download cancelled.");
@@ -34,7 +35,7 @@ export async function POST(request: Request) {
     if (type === "audio") {
       Object.assign(flags, { format: "bestaudio/best", extractAudio: true, audioFormat: "mp3", audioQuality: `${bitrate}K` });
     } else {
-      Object.assign(flags, { format: formatId ? `${formatId}+bestaudio/best` : "bestvideo+bestaudio/best", mergeOutputFormat: "mp4" });
+      Object.assign(flags, { format: formatId ? (hasAudio ? formatId : `${formatId}+bestaudio/${formatId}/best`) : "bestvideo+bestaudio/best", mergeOutputFormat: "mp4" });
     }
     await runYtDlp(source.toString(), flags, { signal: request.signal });
     const candidates = (await readdir(tempDirectory)).filter((file) => !file.endsWith(".part") && !file.endsWith(".ytdl"));

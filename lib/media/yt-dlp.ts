@@ -5,11 +5,17 @@ import type { MediaFormat, MediaMetadata } from "./types";
 
 type RawFormat = {
   format_id?: string | number;
+  url?: string;
   ext?: string;
+  protocol?: string;
   width?: number;
   height?: number;
   vcodec?: string;
   acodec?: string;
+  video_ext?: string;
+  audio_ext?: string;
+  abr?: number;
+  tbr?: number;
   filesize?: number;
   filesize_approx?: number;
   format_note?: string;
@@ -17,12 +23,47 @@ type RawFormat = {
 };
 
 type RawThumbnail = { url?: string; width?: number; height?: number };
-type RawInfo = { id?: string | number; webpage_url?: string; title?: string; uploader?: string; channel?: string; duration?: number; thumbnail?: string; thumbnails?: RawThumbnail[]; formats?: RawFormat[] };
+type RawInfo = {
+  _type?: string;
+  id?: string | number;
+  url?: string;
+  ext?: string;
+  protocol?: string;
+  width?: number;
+  height?: number;
+  vcodec?: string;
+  acodec?: string;
+  video_ext?: string;
+  audio_ext?: string;
+  abr?: number;
+  filesize?: number;
+  webpage_url?: string;
+  title?: string;
+  uploader?: string;
+  channel?: string;
+  duration?: number;
+  thumbnail?: string;
+  thumbnails?: RawThumbnail[];
+  formats?: RawFormat[];
+};
 
 export async function inspectMedia(url: string): Promise<MediaMetadata> {
-  const result = await runYtDlp(url, { dumpSingleJson: true, noWarnings: true, noPlaylist: true, skipDownload: true, preferFreeFormats: true });
+  const result = await inspectWithFallback(url);
   const raw = JSON.parse(result.stdout) as RawInfo;
-  const rawFormats = Array.isArray(raw.formats) ? raw.formats : [];
+  const rawFormats = Array.isArray(raw.formats) && raw.formats.length ? raw.formats : raw.url ? [{
+    format_id: "0",
+    url: raw.url,
+    ext: raw.ext,
+    protocol: raw.protocol,
+    width: raw.width,
+    height: raw.height,
+    vcodec: raw.vcodec,
+    acodec: raw.acodec,
+    video_ext: raw.video_ext,
+    audio_ext: raw.audio_ext,
+    abr: raw.abr,
+    filesize: raw.filesize,
+  }] : [];
   const formats = selectFormats(rawFormats);
   if (!formats.length) throw new Error("Media unavailable. The source did not expose a downloadable video or audio stream.");
 
@@ -35,24 +76,70 @@ export async function inspectMedia(url: string): Promise<MediaMetadata> {
 }
 
 function selectFormats(rawFormats: RawFormat[]): MediaFormat[] {
-  const candidates = rawFormats.filter((format) => format.format_id !== undefined && format.vcodec && format.vcodec !== "none");
+  const candidates = rawFormats.filter((format) => format.format_id !== undefined && hasMedia(format));
   const byHeight = new Map<string, MediaFormat>();
   for (const format of candidates) {
     const height = Number(format.height) || undefined;
+    const hasVideo = hasVideoStream(format);
+    const hasAudio = hasAudioStream(format);
+    const audioOnly = !hasVideo && hasAudio;
     if (!height) continue;
     const normalized: MediaFormat = {
       id: String(format.format_id), label: `${height}p`, ext: (format.ext ?? "bin").toUpperCase(), width: format.width, height,
-      hasAudio: Boolean(format.acodec && format.acodec !== "none"), size: format.filesize ?? format.filesize_approx, note: format.format_note,
+      hasAudio, audioOnly, size: format.filesize ?? format.filesize_approx, note: format.format_note,
     };
-    const key = String(height);
+    const key = audioOnly ? `audio-${format.format_id}` : `video-${height}`;
     const current = byHeight.get(key);
     if (!current || score(normalized) > score(current)) byHeight.set(key, normalized);
   }
-  return [...byHeight.values()].sort((a, b) => (b.height ?? 0) - (a.height ?? 0));
+  for (const format of candidates) {
+    const hasVideo = hasVideoStream(format);
+    const hasAudio = hasAudioStream(format);
+    const audioOnly = !hasVideo && hasAudio;
+    if (format.height || (!hasVideo && !hasAudio)) continue;
+    const normalized: MediaFormat = {
+      id: String(format.format_id), label: audioOnly ? `${Math.round(format.abr ?? format.tbr ?? 0)} kbps` : "Original", ext: (format.ext ?? "bin").toUpperCase(),
+      width: format.width, height: format.height, hasAudio, audioOnly, size: format.filesize ?? format.filesize_approx, note: format.format_note,
+    };
+    const key = audioOnly ? `audio-${format.format_id}` : `video-original-${format.ext ?? format.format_id}`;
+    const current = byHeight.get(key);
+    if (!current || score(normalized) > score(current)) byHeight.set(key, normalized);
+  }
+  return [...byHeight.values()].sort((a, b) => {
+    if (Boolean(a.audioOnly) !== Boolean(b.audioOnly)) return a.audioOnly ? 1 : -1;
+    return (b.height ?? 0) - (a.height ?? 0);
+  });
 }
 
 function score(format: MediaFormat) {
   return (format.hasAudio ? 100000 : 0) + (format.ext === "MP4" ? 10000 : 0) + (format.size ? 1 : 0);
+}
+
+function hasMedia(format: RawFormat) {
+  return hasVideoStream(format) || hasAudioStream(format);
+}
+
+function hasVideoStream(format: RawFormat) {
+  return Boolean((format.vcodec && format.vcodec !== "none") || (format.video_ext && format.video_ext !== "none"));
+}
+
+function hasAudioStream(format: RawFormat) {
+  return Boolean((format.acodec && format.acodec !== "none") || (format.audio_ext && format.audio_ext !== "none"));
+}
+
+async function inspectWithFallback(url: string) {
+  const flags = { dumpSingleJson: true, noWarnings: true, noPlaylist: true, skipDownload: true, preferFreeFormats: true };
+  try {
+    return await runYtDlp(url, flags);
+  } catch (firstError) {
+    try {
+      return await runYtDlp(url, { ...flags, forceGenericExtractor: true });
+    } catch (fallbackError) {
+      const firstMessage = firstError instanceof Error ? firstError.message : "The source extractor failed.";
+      const fallbackMessage = fallbackError instanceof Error ? fallbackError.message : "The generic extractor failed.";
+      throw new Error(`${firstMessage} Generic fallback: ${fallbackMessage}`);
+    }
+  }
 }
 
 export async function runYtDlp(url: string, flags: Record<string, unknown>, options?: Record<string, unknown>) {
