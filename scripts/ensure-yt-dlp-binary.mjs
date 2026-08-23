@@ -1,9 +1,11 @@
+import { spawn } from "node:child_process";
 import { chmod, mkdir, stat, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const projectRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
 const platformAsset = getPlatformAsset();
+const minimumVersion = "2026.02.04";
 const binaryName = process.platform === "win32" ? "yt-dlp.exe" : "yt-dlp";
 const binaryPath = join(projectRoot, "vendor", "yt-dlp", binaryName);
 
@@ -66,8 +68,38 @@ function getPlatformAsset() {
 async function isUsableBinary(path) {
   try {
     const details = await stat(path);
-    return details.isFile() && details.size > 1_000_000;
+    if (!details.isFile() || details.size <= 1_000_000) return false;
+    const version = await readBinaryVersion(path);
+    return version !== undefined && compareVersions(version, minimumVersion) >= 0;
   } catch {
     return false;
   }
+}
+
+function readBinaryVersion(path) {
+  return new Promise((resolve) => {
+    const child = spawn(path, ["--version"], { stdio: ["ignore", "pipe", "ignore"] });
+    let output = "";
+    const timeout = setTimeout(() => {
+      child.kill();
+      resolve(undefined);
+    }, 5_000);
+    child.stdout.on("data", (chunk) => { output += chunk.toString(); });
+    child.on("error", () => { clearTimeout(timeout); resolve(undefined); });
+    child.on("close", (code) => {
+      clearTimeout(timeout);
+      const version = output.trim().match(/\d{4}\.\d{2}\.\d{2}/)?.[0];
+      resolve(code === 0 ? version : undefined);
+    });
+  });
+}
+
+function compareVersions(left, right) {
+  const leftParts = left.split(".").map(Number);
+  const rightParts = right.split(".").map(Number);
+  for (let index = 0; index < Math.max(leftParts.length, rightParts.length); index += 1) {
+    const difference = (leftParts[index] ?? 0) - (rightParts[index] ?? 0);
+    if (difference) return difference;
+  }
+  return 0;
 }
