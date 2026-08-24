@@ -68,8 +68,8 @@ provider.on("exit", (code, signal) => {
 console.log("[next] Starting Next.js...");
 
 const next = spawn(
-  "pnpm",
-  ["exec", "next", "start"],
+  join(root, "node_modules", ".bin", "next"),
+  ["start"],
   {
     cwd: root,
     stdio: "inherit",
