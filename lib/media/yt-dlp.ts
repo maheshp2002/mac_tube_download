@@ -412,7 +412,10 @@ export async function runYtDlp(
   const binary = resolveYtDlpBinary();
 
   const args = [
-    ...flagArguments(flags),
+    ...flagArguments({
+      ...YTDLP_BASE_FLAGS,
+      ...flags,
+    }),
     url,
   ];
 
@@ -479,9 +482,7 @@ export async function runYtDlp(
       (code) => {
         if (signal?.aborted) {
           return reject(
-            new Error(
-              "Download cancelled."
-            )
+            new Error("Download cancelled.")
           );
         }
 
