@@ -60,6 +60,7 @@ type RawInfo = {
  */
 const YTDLP_BASE_FLAGS = {
   jsRuntimes: "node",
+  extractorArgs: "youtube:player-client=android,web",
 };
 
 export async function inspectMedia(url: string): Promise<MediaMetadata> {

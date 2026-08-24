@@ -1,11 +1,9 @@
 import { NextResponse } from "next/server";
-import { execFile } from "child_process";
-import { promisify } from "util";
 import os from "os";
+import { runYtDlp } from "@/lib/media/backend";
 
-const execFileAsync = promisify(execFile);
-
-const TEST_URL = "https://www.youtube.com/shorts/Yf6IhvT253I";
+const TEST_URL =
+  "https://www.youtube.com/shorts/Yf6IhvT253I";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -13,8 +11,9 @@ export const dynamic = "force-dynamic";
 export async function GET() {
   const start = Date.now();
 
-  const result: Record<string, any> = {
+  const result: Record<string, unknown> = {
     testUrl: TEST_URL,
+
     timestamp: new Date().toISOString(),
 
     system: {
@@ -27,83 +26,37 @@ export async function GET() {
 
     render: {
       RENDER: process.env.RENDER,
-      RENDER_SERVICE_NAME: process.env.RENDER_SERVICE_NAME,
-      RENDER_INSTANCE_ID: process.env.RENDER_INSTANCE_ID,
+      RENDER_SERVICE_NAME:
+        process.env.RENDER_SERVICE_NAME,
+      RENDER_INSTANCE_ID:
+        process.env.RENDER_INSTANCE_ID,
     },
+
+    extraction: null,
   };
 
   // --------------------------------------------------
-  // yt-dlp executable
+  // yt-dlp extraction
+  //
+  // IMPORTANT:
+  // This uses the EXACT same runYtDlp() function
+  // used by the real application.
+  //
+  // Therefore it also uses:
+  //   --js-runtimes node
+  //   --extractor-args youtube:player-client=android,web
+  //
+  // from YTDLP_BASE_FLAGS in yt-dlp.ts.
   // --------------------------------------------------
 
   try {
-    const r = await execFileAsync(
-      "sh",
-      ["-c", "command -v yt-dlp || which yt-dlp || true"],
-      { timeout: 10_000 }
-    );
-
-    result.ytdlp = {
-      path: r.stdout.trim(),
-      stderr: r.stderr.trim(),
-    };
-  } catch (error: any) {
-    result.ytdlp = {
-      error: error?.message,
-      code: error?.code,
-      stdout: error?.stdout,
-      stderr: error?.stderr,
-    };
-  }
-
-  // --------------------------------------------------
-  // yt-dlp version
-  // --------------------------------------------------
-
-  try {
-    const r = await execFileAsync(
-      "yt-dlp",
-      ["--version"],
-      { timeout: 10_000 }
-    );
-
-    result.ytdlpVersion = {
-      version: r.stdout.trim(),
-      stderr: r.stderr.trim(),
-    };
-  } catch (error: any) {
-    result.ytdlpVersion = {
-      error: error?.message,
-      code: error?.code,
-      stdout: error?.stdout,
-      stderr: error?.stderr,
-    };
-  }
-
-  // --------------------------------------------------
-  // yt-dlp verbose extraction
-  // --------------------------------------------------
-
-  try {
-    const r = await execFileAsync(
-      "yt-dlp",
-      [
-        "--verbose",
-        "--no-warnings",
-        "--simulate",
-        "--dump-single-json",
-        "--no-playlist",
-        TEST_URL,
-      ],
-      {
-        timeout: 120_000,
-        maxBuffer: 30 * 1024 * 1024,
-        env: {
-          ...process.env,
-          PYTHONUNBUFFERED: "1",
-        },
-      }
-    );
+    const r = await runYtDlp(TEST_URL, {
+      verbose: true,
+      noWarnings: true,
+      simulate: true,
+      dumpSingleJson: true,
+      noPlaylist: true,
+    });
 
     result.extraction = {
       success: true,
@@ -111,15 +64,26 @@ export async function GET() {
       stdout: r.stdout,
       stderr: r.stderr,
     };
-  } catch (error: any) {
+  } catch (error: unknown) {
+    const err = error as {
+      message?: string;
+      code?: string | number;
+      signal?: string | null;
+      killed?: boolean;
+      stdout?: string;
+      stderr?: string;
+    };
+
     result.extraction = {
       success: false,
-      exitCode: error?.code,
-      signal: error?.signal,
-      killed: error?.killed,
-      message: error?.message,
-      stdout: error?.stdout ?? "",
-      stderr: error?.stderr ?? "",
+      exitCode: err.code ?? null,
+      signal: err.signal ?? null,
+      killed: err.killed ?? false,
+      message:
+        err.message ??
+        "yt-dlp extraction failed.",
+      stdout: err.stdout ?? "",
+      stderr: err.stderr ?? "",
     };
   }
 
