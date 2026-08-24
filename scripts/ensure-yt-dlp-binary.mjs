@@ -5,9 +5,60 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const projectRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
-if (getConfiguredMediaMode(projectRoot) === "server") {
-  console.log("[media] Server mode enabled; skipping the yt-dlp binary.");
+if (
+  getConfiguredMediaMode(projectRoot) === "server" ||
+  getConfiguredDownloader(projectRoot) === "cobalt"
+) {
+  console.log(
+    "[media] yt-dlp is disabled for this build configuration."
+  );
+
   process.exit(0);
+}
+
+function getConfiguredDownloader(root) {
+  const configured =
+    process.env.MEDIA_DOWNLOADER
+      ?.trim()
+      .toLowerCase();
+
+  if (configured) {
+    return configured;
+  }
+
+  for (
+    const filename of [
+      ".env.local",
+      ".env",
+    ]
+  ) {
+    try {
+      const contents =
+        readFileSync(
+          join(root, filename),
+          "utf8"
+        );
+
+      const value =
+        contents.match(
+          /^\s*MEDIA_DOWNLOADER\s*=\s*(?:"([^"]+)"|'([^']+)'|([^\s#]+))/m
+        );
+
+      if (value) {
+        return (
+          value[1] ??
+          value[2] ??
+          value[3]
+        )
+          .trim()
+          .toLowerCase();
+      }
+    } catch {
+      // Optional env file.
+    }
+  }
+
+  return "ytdlp";
 }
 
 const platformAsset = getPlatformAsset();
