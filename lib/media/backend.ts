@@ -18,23 +18,67 @@ import {
 
 export { getMediaMode };
 
-export type MediaDownloader =
+export type YoutubeDownloader =
   | "ytdlp"
   | "cobalt";
 
-export function getMediaDownloader(): MediaDownloader {
+/**
+ * Controls ONLY how YouTube is extracted.
+ *
+ * All non-YouTube sources continue using yt-dlp.
+ *
+ * Local:
+ *   YOUTUBE_DOWNLOADER=ytdlp
+ *
+ * Render:
+ *   YOUTUBE_DOWNLOADER=cobalt
+ */
+export function getYoutubeDownloader(): YoutubeDownloader {
   const configured =
-    process.env.MEDIA_DOWNLOADER
+    process.env.YOUTUBE_DOWNLOADER
       ?.trim()
       .toLowerCase();
 
-  if (configured === "cobalt") {
-    return "cobalt";
-  }
-
-  return "ytdlp";
+  return configured === "cobalt"
+    ? "cobalt"
+    : "ytdlp";
 }
 
+/**
+ * Detect YouTube URLs.
+ */
+export function isYoutubeUrl(
+  url: string
+): boolean {
+  try {
+    const parsed = new URL(url);
+
+    const hostname =
+      parsed.hostname.toLowerCase();
+
+    return (
+      hostname === "youtube.com" ||
+      hostname === "www.youtube.com" ||
+      hostname === "m.youtube.com" ||
+      hostname === "music.youtube.com" ||
+      hostname === "youtu.be" ||
+      hostname.endsWith(".youtube.com")
+    );
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Inspect media metadata.
+ *
+ * server mode:
+ *   native backend
+ *
+ * local mode:
+ *   YouTube + cobalt -> Cobalt
+ *   everything else  -> yt-dlp
+ */
 export async function inspectMedia(
   url: string
 ) {
@@ -42,13 +86,26 @@ export async function inspectMedia(
     return inspectNativeMedia(url);
   }
 
-  if (getMediaDownloader() === "cobalt") {
+  if (
+    isYoutubeUrl(url) &&
+    getYoutubeDownloader() === "cobalt"
+  ) {
     return inspectCobaltMedia(url);
   }
 
   return inspectWithYtDlp(url);
 }
 
+/**
+ * Resolve a direct media URL.
+ *
+ * server mode:
+ *   native backend
+ *
+ * local mode:
+ *   YouTube + cobalt -> Cobalt
+ *   everything else  -> yt-dlp
+ */
 export async function resolveDirectMediaUrl(
   url: string,
   formatId?: string
@@ -60,16 +117,22 @@ export async function resolveDirectMediaUrl(
     );
   }
 
-  if (getMediaDownloader() === "cobalt") {
+  if (
+    isYoutubeUrl(url) &&
+    getYoutubeDownloader() === "cobalt"
+  ) {
     const result =
-      await resolveCobaltDownload(url, {
-        type: "video",
-        quality:
-          formatId &&
-          /^\d+$/.test(formatId)
-            ? formatId
-            : "max",
-      });
+      await resolveCobaltDownload(
+        url,
+        {
+          type: "video",
+          quality:
+            formatId &&
+            /^\d+$/.test(formatId)
+              ? formatId
+              : "max",
+        }
+      );
 
     return result.url;
   }
@@ -86,6 +149,11 @@ export async function resolveDirectMediaUrl(
   );
 }
 
+/**
+ * Explicit Cobalt operation.
+ *
+ * Cobalt is ONLY allowed for YouTube.
+ */
 export async function resolveCobaltMedia(
   url: string,
   options: {
@@ -94,9 +162,17 @@ export async function resolveCobaltMedia(
     bitrate?: string;
   }
 ) {
-  if (getMediaDownloader() !== "cobalt") {
+  if (!isYoutubeUrl(url)) {
     throw new Error(
-      "Cobalt downloader is not enabled."
+      "Cobalt is only configured for YouTube sources."
+    );
+  }
+
+  if (
+    getYoutubeDownloader() !== "cobalt"
+  ) {
+    throw new Error(
+      "Cobalt is not enabled for YouTube."
     );
   }
 
@@ -106,19 +182,25 @@ export async function resolveCobaltMedia(
   );
 }
 
+/**
+ * yt-dlp remains available for ALL non-YouTube
+ * sources, even when YouTube uses Cobalt.
+ *
+ * This is important:
+ *
+ * Render:
+ *   YouTube    -> Cobalt
+ *   Instagram  -> yt-dlp
+ *   TikTok     -> yt-dlp
+ *   Facebook   -> yt-dlp
+ *   X          -> yt-dlp
+ *   etc.
+ */
 export function runYtDlp(
   url: string,
   flags: Record<string, unknown>,
   options?: Record<string, unknown>
 ) {
-  if (
-    getMediaDownloader() === "cobalt"
-  ) {
-    throw new Error(
-      "yt-dlp is disabled because MEDIA_DOWNLOADER=cobalt."
-    );
-  }
-
   if (getMediaMode() === "server") {
     throw new Error(
       "yt-dlp is disabled in server mode."

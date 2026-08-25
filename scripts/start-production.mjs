@@ -2,30 +2,55 @@ import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 
-const root = process.cwd();
+const root =
+  process.cwd();
 
-const downloader =
-  process.env.MEDIA_DOWNLOADER
+/*
+ * This controls ONLY YouTube.
+ *
+ * ytdlp:
+ *   YouTube -> yt-dlp
+ *   Other   -> yt-dlp
+ *
+ * cobalt:
+ *   YouTube -> Cobalt
+ *   Other   -> yt-dlp
+ */
+const youtubeDownloader =
+  process.env.YOUTUBE_DOWNLOADER
     ?.trim()
     .toLowerCase() ?? "ytdlp";
 
 let provider = null;
 
 /*
- * Start bgutil only when yt-dlp is the
- * configured downloader.
+ * Start bgutil only when yt-dlp
+ * is being used for YouTube.
+ *
+ * IMPORTANT:
+ * yt-dlp is still installed and used
+ * for Instagram/TikTok/etc. when
+ * YouTube uses Cobalt.
  */
-if (downloader === "ytdlp") {
-  const providerServer = join(
-    root,
-    "vendor",
-    "bgutil",
-    "server",
-    "build",
-    "main.js"
-  );
+if (
+  youtubeDownloader ===
+  "ytdlp"
+) {
+  const providerServer =
+    join(
+      root,
+      "vendor",
+      "bgutil",
+      "server",
+      "build",
+      "main.js"
+    );
 
-  if (!existsSync(providerServer)) {
+  if (
+    !existsSync(
+      providerServer
+    )
+  ) {
     console.error(
       `[bgutil] Provider server not found: ${providerServer}`
     );
@@ -34,33 +59,37 @@ if (downloader === "ytdlp") {
   }
 
   console.log(
-    "[media] Downloader: yt-dlp"
+    "[media] YouTube downloader: yt-dlp"
   );
 
   console.log(
-    `[bgutil] Starting PO-token provider: ${providerServer}`
+    `[bgutil] Starting provider: ${providerServer}`
   );
 
-  provider = spawn(
-    process.execPath,
-    [
-      providerServer,
-      "--port",
-      "4416",
-    ],
-    {
-      cwd: join(
-        root,
-        "vendor",
-        "bgutil",
-        "server"
-      ),
-      stdio: "inherit",
-      env: {
-        ...process.env,
-      },
-    }
-  );
+  provider =
+    spawn(
+      process.execPath,
+      [
+        providerServer,
+        "--port",
+        "4416",
+      ],
+      {
+        cwd: join(
+          root,
+          "vendor",
+          "bgutil",
+          "server"
+        ),
+
+        stdio:
+          "inherit",
+
+        env: {
+          ...process.env,
+        },
+      }
+    );
 
   provider.on(
     "error",
@@ -89,24 +118,33 @@ if (downloader === "ytdlp") {
     }
   );
 } else if (
-  downloader === "cobalt"
+  youtubeDownloader ===
+  "cobalt"
 ) {
   console.log(
-    "[media] Downloader: cobalt"
+    "[media] YouTube downloader: cobalt"
   );
 
   if (
-    !process.env.COBALT_API_URL
+    !process.env.COBALT_API_URL?.trim()
   ) {
     console.error(
-      "[media] COBALT_API_URL is required when MEDIA_DOWNLOADER=cobalt."
+      "[media] COBALT_API_URL is required when YOUTUBE_DOWNLOADER=cobalt."
     );
 
     process.exit(1);
   }
+
+  console.log(
+    `[media] Cobalt API: ${process.env.COBALT_API_URL}`
+  );
 } else {
   console.error(
-    `[media] Unsupported MEDIA_DOWNLOADER="${downloader}". Use "ytdlp" or "cobalt".`
+    `[media] Unsupported YOUTUBE_DOWNLOADER="${youtubeDownloader}".`
+  );
+
+  console.error(
+    '[media] Use "ytdlp" or "cobalt".'
   );
 
   process.exit(1);
@@ -116,25 +154,30 @@ console.log(
   "[next] Starting Next.js..."
 );
 
-const next = spawn(
-  join(
-    root,
-    "node_modules",
-    ".bin",
-    "next"
-  ),
-  ["start"],
-  {
-    cwd: root,
-    stdio: "inherit",
-    env: {
-      ...process.env,
-      PORT:
-        process.env.PORT ??
-        "10000",
-    },
-  }
-);
+const next =
+  spawn(
+    join(
+      root,
+      "node_modules",
+      ".bin",
+      "next"
+    ),
+    ["start"],
+    {
+      cwd: root,
+
+      stdio:
+        "inherit",
+
+      env: {
+        ...process.env,
+
+        PORT:
+          process.env.PORT ??
+          "10000",
+      },
+    }
+  );
 
 next.on(
   "error",
@@ -177,7 +220,9 @@ function shutdown() {
     "[shutdown] Stopping services..."
   );
 
-  next.kill("SIGTERM");
+  next.kill(
+    "SIGTERM"
+  );
 
   provider?.kill(
     "SIGTERM"

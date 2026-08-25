@@ -1,18 +1,31 @@
 import { createReadStream } from "node:fs";
-import { mkdtemp, readdir, rm, stat } from "node:fs/promises";
+import {
+  mkdtemp,
+  readdir,
+  rm,
+  stat,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { basename, join } from "node:path";
+import {
+  basename,
+  join,
+} from "node:path";
 import { Readable } from "node:stream";
 
 import { getFfmpegPath } from "@/lib/ffmpeg/process";
-import { acquireDownloadSlot } from "@/lib/downloads/limiter";
 import {
-  getMediaDownloader,
+  acquireDownloadSlot,
+} from "@/lib/downloads/limiter";
+
+import {
   getMediaMode,
+  getYoutubeDownloader,
+  isYoutubeUrl,
   resolveCobaltMedia,
   resolveDirectMediaUrl,
   runYtDlp,
 } from "@/lib/media/backend";
+
 import {
   safeFilename,
   validateMediaUrl,
@@ -33,17 +46,28 @@ type DownloadRequest = {
   bitrate?: unknown;
 };
 
-export async function POST(request: Request) {
-  let tempDirectory: string | undefined;
+export async function POST(
+  request: Request
+) {
+  let tempDirectory:
+    | string
+    | undefined;
+
   let handedOff = false;
-  let releaseSlot: (() => void) | undefined;
+
+  let releaseSlot:
+    | (() => void)
+    | undefined;
 
   try {
     const body =
       (await request.json()) as DownloadRequest;
 
-    const source = validateMediaUrl(body.url);
-    const downloader = getMediaDownloader();
+    const source =
+      validateMediaUrl(body.url);
+
+    const sourceUrl =
+      source.toString();
 
     const type =
       body.type === "audio"
@@ -68,9 +92,11 @@ export async function POST(request: Request) {
     const requiresFfmpeg =
       type === "audio" ||
       body.requiresFfmpeg === true ||
-      (!hasExplicitFfmpegChoice &&
+      (
+        !hasExplicitFfmpegChoice &&
         type === "video" &&
-        !hasAudio);
+        !hasAudio
+      );
 
     const protocol =
       typeof body.protocol === "string"
@@ -92,12 +118,13 @@ export async function POST(request: Request) {
           ? "localdrop-audio"
           : "localdrop-video";
 
-    const requestedExtension = safeExtension(
-      body.ext,
-      type === "audio"
-        ? "mp3"
-        : "mp4"
-    );
+    const requestedExtension =
+      safeExtension(
+        body.ext,
+        type === "audio"
+          ? "mp3"
+          : "mp4"
+      );
 
     releaseSlot =
       await acquireDownloadSlot();
@@ -110,23 +137,31 @@ export async function POST(request: Request) {
 
     /*
      * =====================================================
-     * COBALT BACKEND
+     * YOUTUBE -> COBALT
      * =====================================================
      *
-     * Cobalt handles the complete media extraction.
-     * We don't invoke yt-dlp or FFmpeg here.
+     * Only YouTube uses Cobalt.
+     *
+     * Instagram/TikTok/etc. will NOT enter this branch.
      */
-    if (downloader === "cobalt") {
+    const useCobalt =
+      isYoutubeUrl(sourceUrl) &&
+      getYoutubeDownloader() ===
+        "cobalt";
+
+    if (useCobalt) {
       const cobaltResult =
         await resolveCobaltMedia(
-          source.toString(),
+          sourceUrl,
           {
             type,
+
             quality:
               formatId &&
               /^\d+$/.test(formatId)
                 ? formatId
                 : "max",
+
             bitrate,
           }
         );
@@ -134,7 +169,7 @@ export async function POST(request: Request) {
       const fallbackExtension =
         type === "audio"
           ? "mp3"
-          : requestedExtension || "mp4";
+          : requestedExtension;
 
       const filename =
         `${safeFilename(title)}.${fallbackExtension}`;
@@ -142,17 +177,23 @@ export async function POST(request: Request) {
       return Response.json(
         {
           direct: true,
-          directUrl: cobaltResult.url,
+
+          directUrl:
+            cobaltResult.url,
+
           filename:
             cobaltResult.filename ??
             filename,
+
           contentType:
             cobaltResult.contentType ??
-            (type === "audio"
-              ? "audio/mpeg"
-              : mimeFor(
-                  fallbackExtension
-                )),
+            (
+              type === "audio"
+                ? "audio/mpeg"
+                : mimeFor(
+                    fallbackExtension
+                  )
+            ),
         },
         {
           headers: {
@@ -168,7 +209,7 @@ export async function POST(request: Request) {
      * SERVER MODE
      * =====================================================
      *
-     * This is your existing direct-media mode.
+     * Existing behavior preserved.
      */
     if (
       getMediaMode() === "server"
@@ -181,7 +222,7 @@ export async function POST(request: Request) {
 
       const directUrl =
         await resolveDirectMediaUrl(
-          source.toString(),
+          sourceUrl,
           formatId
         );
 
@@ -189,7 +230,7 @@ export async function POST(request: Request) {
         `/api/media-proxy?target=${encodeURIComponent(
           directUrl
         )}&referer=${encodeURIComponent(
-          source.toString()
+          sourceUrl
         )}`;
 
       return Response.json(
@@ -197,10 +238,14 @@ export async function POST(request: Request) {
           direct: true,
           proxy: true,
           proxyUrl,
+
           filename:
             `${safeFilename(title)}.${requestedExtension}`,
+
           contentType:
-            mimeFor(requestedExtension),
+            mimeFor(
+              requestedExtension
+            ),
         },
         {
           headers: {
@@ -213,8 +258,19 @@ export async function POST(request: Request) {
 
     /*
      * =====================================================
-     * LOCAL YT-DLP DIRECT FORMAT
+     * YT-DLP DIRECT DOWNLOAD
      * =====================================================
+     *
+     * This handles:
+     *   Instagram
+     *   TikTok
+     *   Facebook
+     *   X
+     *   Reddit
+     *   and all other yt-dlp sources.
+     *
+     * It also handles YouTube when:
+     *   YOUTUBE_DOWNLOADER=ytdlp
      */
     if (
       type === "video" &&
@@ -224,7 +280,7 @@ export async function POST(request: Request) {
     ) {
       const directUrl =
         await resolveDirectMediaUrl(
-          source.toString(),
+          sourceUrl,
           formatId
         );
 
@@ -232,10 +288,14 @@ export async function POST(request: Request) {
         {
           direct: true,
           directUrl,
+
           filename:
             `${safeFilename(title)}.${requestedExtension}`,
+
           contentType:
-            mimeFor(requestedExtension),
+            mimeFor(
+              requestedExtension
+            ),
         },
         {
           headers: {
@@ -248,17 +308,22 @@ export async function POST(request: Request) {
 
     /*
      * =====================================================
-     * LOCAL YT-DLP PROCESSED DOWNLOAD
+     * YT-DLP PROCESSED DOWNLOAD
      * =====================================================
      */
-    tempDirectory = await mkdtemp(
-      join(tmpdir(), "localdrop-")
-    );
+    tempDirectory =
+      await mkdtemp(
+        join(
+          tmpdir(),
+          "localdrop-"
+        )
+      );
 
-    const outputBase = join(
-      tempDirectory,
-      "localdrop-output"
-    );
+    const outputBase =
+      join(
+        tempDirectory,
+        "localdrop-output"
+      );
 
     const flags: Record<
       string,
@@ -269,34 +334,59 @@ export async function POST(request: Request) {
       noProgress: true,
       quiet: true,
       restrictFilenames: true,
+
       output:
         `${outputBase}.%(ext)s`,
     };
 
+    /*
+     * FFmpeg is used only when the
+     * selected download requires processing.
+     */
     if (requiresFfmpeg) {
       flags.ffmpegLocation =
         await getFfmpegPath();
     }
 
+    /*
+     * AUDIO
+     */
     if (type === "audio") {
-      Object.assign(flags, {
-        format:
-          "bestaudio/best",
-        extractAudio: true,
-        audioFormat: "mp3",
-        audioQuality:
-          `${bitrate}K`,
-      });
-    } else {
-      Object.assign(flags, {
-        format: formatId
-          ? requiresFfmpeg
-            ? `${formatId}+bestaudio/${formatId}/best`
-            : formatId
-          : requiresFfmpeg
-            ? "bestvideo+bestaudio/best"
-            : "best",
-      });
+      Object.assign(
+        flags,
+        {
+          format:
+            "bestaudio/best",
+
+          extractAudio:
+            true,
+
+          audioFormat:
+            "mp3",
+
+          audioQuality:
+            `${bitrate}K`,
+        }
+      );
+    }
+
+    /*
+     * VIDEO
+     */
+    else {
+      Object.assign(
+        flags,
+        {
+          format:
+            formatId
+              ? requiresFfmpeg
+                ? `${formatId}+bestaudio/${formatId}/best`
+                : formatId
+              : requiresFfmpeg
+                ? "bestvideo+bestaudio/best"
+                : "best",
+        }
+      );
 
       if (requiresFfmpeg) {
         flags.mergeOutputFormat =
@@ -304,8 +394,14 @@ export async function POST(request: Request) {
       }
     }
 
+    /*
+     * ALL NON-COBALT SOURCES COME HERE.
+     *
+     * This is what keeps Instagram,
+     * TikTok, Facebook, etc. working.
+     */
     await runYtDlp(
-      source.toString(),
+      sourceUrl,
       flags,
       {
         signal:
@@ -320,8 +416,12 @@ export async function POST(request: Request) {
         )
       ).filter(
         (file) =>
-          !file.endsWith(".part") &&
-          !file.endsWith(".ytdl")
+          !file.endsWith(
+            ".part"
+          ) &&
+          !file.endsWith(
+            ".ytdl"
+          )
       );
 
     if (!candidates.length) {
@@ -330,10 +430,11 @@ export async function POST(request: Request) {
       );
     }
 
-    const filePath = join(
-      tempDirectory,
-      candidates[0]
-    );
+    const filePath =
+      join(
+        tempDirectory,
+        candidates[0]
+      );
 
     const fileInfo =
       await stat(filePath);
@@ -342,16 +443,22 @@ export async function POST(request: Request) {
       basename(filePath)
         .split(".")
         .pop() ||
-      (type === "audio"
-        ? "mp3"
-        : "mp4");
+      (
+        type === "audio"
+          ? "mp3"
+          : "mp4"
+      );
 
     const filename =
       `${safeFilename(title)}.${extension}`;
 
+    /*
+     * Existing Vercel safeguard.
+     */
     if (
       process.env.VERCEL &&
-      fileInfo.size > 4_500_000
+      fileInfo.size >
+        4_500_000
     ) {
       throw new Error(
         "This processed file is larger than Vercel's 4.5 MB function response limit. Choose a progressive direct format or use a host with file storage."
@@ -359,17 +466,21 @@ export async function POST(request: Request) {
     }
 
     const nodeStream =
-      createReadStream(filePath);
-
-    const cleanup = () => {
-      void rm(
-        tempDirectory as string,
-        {
-          recursive: true,
-          force: true,
-        }
+      createReadStream(
+        filePath
       );
-    };
+
+    const cleanup =
+      () => {
+        void rm(
+          tempDirectory as string,
+          {
+            recursive:
+              true,
+            force: true,
+          }
+        );
+      };
 
     nodeStream.once(
       "close",
@@ -392,10 +503,14 @@ export async function POST(request: Request) {
           "Content-Type":
             type === "audio"
               ? "audio/mpeg"
-              : mimeFor(extension),
+              : mimeFor(
+                  extension
+                ),
 
           "Content-Length":
-            String(fileInfo.size),
+            String(
+              fileInfo.size
+            ),
 
           "Content-Disposition":
             `attachment; filename="${filename}"`,
@@ -414,6 +529,7 @@ export async function POST(request: Request) {
     return Response.json(
       {
         message,
+
         details:
           error instanceof Error
             ? error.stack
@@ -446,21 +562,27 @@ export async function POST(request: Request) {
 function mimeFor(
   extension: string
 ) {
-  return {
-    mp4: "video/mp4",
-    m4v: "video/mp4",
-    webm: "video/webm",
-    mkv: "video/x-matroska",
-    mov: "video/quicktime",
-    avi: "video/x-msvideo",
-    ts: "video/mp2t",
-    mp3: "audio/mpeg",
-    ogg: "audio/ogg",
-    wav: "audio/wav",
-    opus: "audio/opus",
-  }[
+  return (
+    {
+      mp4: "video/mp4",
+      m4v: "video/mp4",
+      webm: "video/webm",
+      mkv: "video/x-matroska",
+      mov: "video/quicktime",
+      avi: "video/x-msvideo",
+      ts: "video/mp2t",
+      mp3: "audio/mpeg",
+      ogg: "audio/ogg",
+      wav: "audio/wav",
+      opus: "audio/opus",
+    } as Record<
+      string,
+      string
+    >
+  )[
     extension.toLowerCase()
-  ] ?? "application/octet-stream";
+  ] ??
+    "application/octet-stream";
 }
 
 function safeExtension(
