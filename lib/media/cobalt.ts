@@ -77,33 +77,64 @@ async function cobaltRequest(
     "Content-Type": "application/json",
   };
 
-  const apiKey = process.env.COBALT_API_KEY?.trim();
+  const apiKey =
+    process.env.COBALT_API_KEY?.trim();
 
   if (apiKey) {
-    headers.Authorization = `Api-Key ${apiKey}`;
+    headers.Authorization =
+      `Api-Key ${apiKey}`;
   }
 
-  const response = await fetch(baseUrl, {
-    method: "POST",
-    headers,
-    body: JSON.stringify(body),
-    cache: "no-store",
-  });
+  const response = await fetch(
+    baseUrl,
+    {
+      method: "POST",
+      headers,
+      body: JSON.stringify(body),
+      cache: "no-store",
+    }
+  );
 
-  const text = await response.text();
+  const text =
+    await response.text();
 
-  let data: CobaltResponse;
+  let data: CobaltResponse | null =
+    null;
 
   try {
     data = JSON.parse(text) as CobaltResponse;
   } catch {
+    if (response.status === 429) {
+      throw new Error(
+        "Cobalt rate limit exceeded (HTTP 429). Wait a moment and try again."
+      );
+    }
+
     throw new Error(
-      `Cobalt returned an invalid response (${response.status}).`
+      `Cobalt returned a non-JSON response (HTTP ${response.status}).`
     );
   }
 
   if (!response.ok) {
-    if (data.status === "error") {
+    if (
+      response.status === 429
+    ) {
+      const retryAfter =
+        response.headers.get(
+          "Retry-After"
+        );
+
+      throw new Error(
+        retryAfter
+          ? `Cobalt rate limit exceeded. Try again in ${retryAfter} seconds.`
+          : "Cobalt rate limit exceeded. Try again in a moment."
+      );
+    }
+
+    if (
+      data &&
+      data.status === "error"
+    ) {
       throw new Error(
         data.error?.code ??
           `Cobalt request failed with HTTP ${response.status}.`
@@ -115,13 +146,16 @@ async function cobaltRequest(
     );
   }
 
-  if (data.status === "error") {
+  if (
+    data?.status === "error"
+  ) {
     throw new Error(
-      data.error?.code ?? "Cobalt could not process this source."
+      data.error?.code ??
+        "Cobalt could not process this source."
     );
   }
 
-  return data;
+  return data as CobaltResponse;
 }
 
 async function getYoutubeOEmbed(
