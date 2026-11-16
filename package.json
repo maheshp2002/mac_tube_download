@@ -3,8 +3,8 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "postinstall": "node scripts/ensure-yt-dlp-binary.mjs && node scripts/sync-extension-config.mjs",
-    "prebuild": "node scripts/ensure-yt-dlp-binary.mjs && node scripts/package-extension.mjs",
+    "postinstall": "node scripts/ensure-yt-dlp-binary.mjs",
+    "prebuild": "node scripts/ensure-yt-dlp-binary.mjs",
     "sync:extension": "node scripts/sync-extension-config.mjs",
     "package:extension": "node scripts/package-extension.mjs",
     "dev": "node scripts/sync-extension-config.mjs && next dev",
