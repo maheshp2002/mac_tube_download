@@ -97,6 +97,49 @@ export default function DownloaderApp() {
   const [url, setUrl] = useState(""); const [media, setMedia] = useState<Media>(); const [jobState, setJobState] = useState<JobState>("idle"); const [progress, setProgress] = useState(0); const [jobMessage, setJobMessage] = useState("");
   const [error, setError] = useState<{ message: string; details?: string }>(); const [activeSection, setActiveSection] = useState<"workspace" | "history">("workspace"); const [selectedVideo, setSelectedVideo] = useState<string>(); const [selectedAudio, setSelectedAudio] = useState("320");
   const [history, setHistory] = useState<HistoryItem[]>(() => { if (typeof window === "undefined") return []; try { return JSON.parse(window.localStorage.getItem("localdrop-history") ?? "[]") as HistoryItem[]; } catch { return []; } }); const [toast, setToast] = useState<string>(); const [isDark, setIsDark] = useState(() => typeof window === "undefined" || window.localStorage.getItem("localdrop-theme") !== "light"); const [showDetails, setShowDetails] = useState(false); const abortRef = useRef<AbortController | undefined>(undefined);
+  const [isExtensionInstalled, setIsExtensionInstalled] = useState(false);
+  const [showExtensionModal, setShowExtensionModal] = useState(false);
+  const [showInstallSteps, setShowInstallSteps] = useState(false);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    if (document.documentElement.dataset.localdropExtension) {
+      setIsExtensionInstalled(true);
+      window.postMessage({ type: "LOCALDROP_SYNC_SERVER_URL", serverUrl: window.location.origin }, "*");
+    }
+    const handleMsg = (e: MessageEvent) => {
+      if (e.data?.type === "LOCALDROP_EXTENSION_INSTALLED") {
+        setIsExtensionInstalled(true);
+        window.postMessage({ type: "LOCALDROP_SYNC_SERVER_URL", serverUrl: window.location.origin }, "*");
+      }
+    };
+    window.addEventListener("message", handleMsg);
+    window.postMessage({ type: "PING_LOCALDROP_EXTENSION" }, "*");
+
+    const isDismissed = window.localStorage.getItem("localdrop-extension-dismissed") === "true";
+    const timer = window.setTimeout(() => {
+      if (!document.documentElement.dataset.localdropExtension && !isDismissed) {
+        setShowExtensionModal(true);
+      }
+    }, 1500);
+
+    return () => {
+      window.removeEventListener("message", handleMsg);
+      window.clearTimeout(timer);
+    };
+  }, []);
+
+  function dismissExtensionModal() {
+    setShowExtensionModal(false);
+    if (typeof window !== "undefined") {
+      window.localStorage.setItem("localdrop-extension-dismissed", "true");
+    }
+  }
+
+  function downloadExtensionZip() {
+    triggerBrowserDownload("/localdrop-extension.zip", "localdrop-extension.zip");
+    setShowInstallSteps(true);
+  }
 
   useEffect(() => { document.documentElement.dataset.theme = isDark ? "dark" : "light"; window.localStorage.setItem("localdrop-theme", isDark ? "dark" : "light"); }, [isDark]);
   useEffect(() => { if (!toast) return; const timeout = window.setTimeout(() => setToast(undefined), 3800); return () => window.clearTimeout(timeout); }, [toast]);
@@ -145,7 +188,7 @@ export default function DownloaderApp() {
 
   return <div className="app-shell">
     <aside className="sidebar"><div className="sidebar-top"><div className="brand"><Logo /><span>localdrop</span></div><span className="local-pill"><span />LOCAL</span></div><div className="sidebar-nav"><p className="sidebar-label">WORKSPACE</p><NavItem icon="spark" label="Downloader" active={activeSection === "workspace"} onClick={() => setActiveSection("workspace")} /><NavItem icon="history" label="History" badge={history.length ? String(history.length).padStart(2, "0") : undefined} active={activeSection === "history"} onClick={() => setActiveSection("history")} /><p className="sidebar-label sidebar-label-spaced">TOOLS</p><NavItem icon="folder" label="Downloads folder" onClick={() => setToast("Files are saved through your browser's Downloads folder")} /><NavItem icon="settings" label="Preferences" onClick={() => setToast("Preferences are coming to this local workspace")} /></div><div className="sidebar-bottom"><div className="privacy-card"><div className="privacy-icon"><Icon name="shield" size={15} /></div><div><strong>Private by design</strong><span>Files never leave your device.</span></div></div><button className="profile-row" type="button" onClick={() => setToast("You are using Local mode")}><span className="avatar">L</span><span className="profile-copy"><strong>Local mode</strong><small>Offline workspace</small></span><Icon name="more" size={17} /></button></div></aside>
-    <main className="main-content"><header className="topbar"><div className="mobile-brand"><Logo /><span>localdrop</span></div><div className="breadcrumb"><span>Workspace</span><Icon name="chevron-right" size={13} /><strong>{activeSection === "workspace" ? "Downloader" : "History"}</strong></div><div className="top-actions"><span className="status-dot"><span />All systems local</span><button className="icon-button" type="button" aria-label="Toggle color mode" onClick={() => setIsDark((current) => !current)}><Icon name={isDark ? "sun" : "moon"} size={17} /></button><button className="help-button" type="button" onClick={() => setToast("Paste a URL from a source you are authorized to download")}>?</button></div></header>
+    <main className="main-content"><header className="topbar"><div className="mobile-brand"><Logo /><span>localdrop</span></div><div className="breadcrumb"><span>Workspace</span><Icon name="chevron-right" size={13} /><strong>{activeSection === "workspace" ? "Downloader" : "History"}</strong></div><div className="top-actions">{isExtensionInstalled ? <span className="ext-badge-active" title="LocalDrop 1-Click Extension is installed and active"><span />Extension Active</span> : <button className="ext-cta-btn" type="button" onClick={() => { setShowInstallSteps(false); setShowExtensionModal(true); }} title="Get 1-click toolbar extension for YouTube, Instagram, X/Twitter"><Icon name="spark" size={13} /><span>1-Click Extension</span></button>}<span className="status-dot"><span />All systems local</span><button className="icon-button" type="button" aria-label="Toggle color mode" onClick={() => setIsDark((current) => !current)}><Icon name={isDark ? "sun" : "moon"} size={17} /></button><button className="help-button" type="button" onClick={() => setToast("Paste a URL from a source you are authorized to download")}>?</button></div></header>
       {activeSection === "history" ? <section className="history-page page-width"><div className="page-heading"><div><span className="eyebrow">YOUR LIBRARY</span><h1>Recent downloads</h1><p>Everything you have saved stays on this device.</p></div>{history.length ? <button className="ghost-button danger-button" type="button" onClick={clearHistory}><Icon name="trash" size={15} />Clear history</button> : null}</div>{history.length ? <div className="history-list">{history.map((item) => <div className="history-row" key={item.id}><div className="history-thumb">{item.thumbnail ? <img src={item.thumbnail} alt="" /> : <Icon name="file" size={20} />}<span className="history-type">{item.format}</span></div><div className="history-main"><strong>{item.title}</strong><span>{item.detail} <i>•</i> {item.size}</span></div><time>{new Date(item.createdAt).toLocaleDateString(undefined, { month: "short", day: "numeric" })}<br />{new Date(item.createdAt).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" })}</time><button className="icon-button subtle" type="button" aria-label="More options"><Icon name="more" size={17} /></button></div>)}</div> : <div className="empty-history"><div className="empty-history-icon"><Icon name="download" size={25} /></div><h2>No downloads yet</h2><p>Files you save from the workspace will appear here.</p><button className="primary-button" type="button" onClick={() => setActiveSection("workspace")}><Icon name="arrow-right" size={17} />Go to downloader</button></div>}</section> : <section className={`workspace page-width ${media ? "has-media" : ""}`}>
         <div className="workspace-intro"><div><span className="eyebrow">LOCAL MEDIA WORKSPACE</span><h1>Download <em>&</em> convert.</h1><p>Bring your media home. Fast, private, and entirely on your machine.</p></div><div className="intro-stat"><span className="stat-icon"><Icon name="activity" size={18} /></span><span><strong>0</strong><small>active jobs</small></span></div></div>
         <form className={`url-bar ${jobState === "inspecting" ? "is-loading" : ""}`} onSubmit={inspectUrl}><div className="url-leading"><Icon name="link" size={20} /></div><input aria-label="Media URL" value={url} onChange={(event) => setUrl(event.target.value)} placeholder="Paste a media URL to get started…" type="url" /><span className="url-host">{url && isUrl(url) ? hostFromUrl(url) : ""}</span><button className="url-submit" type="submit" disabled={jobState === "inspecting"}>{jobState === "inspecting" ? <span className="spinner" /> : <Icon name="arrow-right" size={20} />}</button></form>
@@ -159,5 +202,133 @@ export default function DownloaderApp() {
       </section>}
     </main>
     {toast ? <div className="toast"><span className="toast-check"><Icon name="check" size={13} /></span>{toast}<button type="button" onClick={() => setToast(undefined)}><Icon name="x" size={13} /></button></div> : null}
+    {showExtensionModal ? (
+      <div className="modal-backdrop" onClick={dismissExtensionModal}>
+        <div className="ext-modal" onClick={(e) => e.stopPropagation()}>
+          <div className="ext-modal-header">
+            <div className="ext-badge-title">
+              <Icon name="spark" size={12} />
+              <span>INSTANT TOOLBAR DOWNLOADER</span>
+            </div>
+            <button
+              className="ext-close-btn"
+              type="button"
+              aria-label="Close"
+              onClick={dismissExtensionModal}
+            >
+              <Icon name="x" size={14} />
+            </button>
+          </div>
+
+          <div className="ext-modal-hero">
+            <h2>Get LocalDrop 1-Click Extension</h2>
+            <p>
+              Download videos and audio directly from YouTube, Instagram, X/Twitter, TikTok and more
+              with a single click right in your browser toolbar — no manual link copying needed!
+            </p>
+          </div>
+
+          <div className="ext-features-grid">
+            <div className="ext-feature-card">
+              <div className="ext-feature-icon"><Icon name="spark" size={16} /></div>
+              <div>
+                <strong>Auto-Detects URL</strong>
+                <span>Inspects active video tab automatically</span>
+              </div>
+            </div>
+            <div className="ext-feature-card">
+              <div className="ext-feature-icon"><Icon name="download" size={16} /></div>
+              <div>
+                <strong>1-Click Video</strong>
+                <span>Instant highest quality MP4 download</span>
+              </div>
+            </div>
+            <div className="ext-feature-card">
+              <div className="ext-feature-icon"><Icon name="audio" size={16} /></div>
+              <div>
+                <strong>Format Switcher</strong>
+                <span>Split dropdown to toggle MP3 & resolutions</span>
+              </div>
+            </div>
+          </div>
+
+          {!showInstallSteps ? (
+            <div className="ext-modal-actions">
+              <button
+                className="ext-download-btn"
+                type="button"
+                onClick={downloadExtensionZip}
+              >
+                <Icon name="download" size={16} />
+                <span>Download Extension (.zip)</span>
+              </button>
+              <button
+                className="ext-ghost-btn"
+                type="button"
+                onClick={() => setShowInstallSteps(true)}
+              >
+                View 3-Step Install Guide
+              </button>
+              <button
+                className="ext-text-btn"
+                type="button"
+                onClick={dismissExtensionModal}
+              >
+                Continue using Web App
+              </button>
+            </div>
+          ) : (
+            <div className="ext-guide-section">
+              <div className="ext-guide-heading">
+                <strong>3 Easy Steps to Install</strong>
+                <span>Takes less than 30 seconds (no webstore required)</span>
+              </div>
+
+              <ol className="ext-steps-list">
+                <li>
+                  <div className="ext-step-num">1</div>
+                  <div className="ext-step-body">
+                    <strong>Extract the ZIP</strong>
+                    <span>Extract <code>localdrop-extension.zip</code> to any folder on your PC.</span>
+                  </div>
+                </li>
+                <li>
+                  <div className="ext-step-num">2</div>
+                  <div className="ext-step-body">
+                    <strong>Open Extensions Page</strong>
+                    <span>Go to <code>chrome://extensions</code> in Chrome/Brave/Edge and toggle ON <strong>Developer mode</strong> (top-right).</span>
+                  </div>
+                </li>
+                <li>
+                  <div className="ext-step-num">3</div>
+                  <div className="ext-step-body">
+                    <strong>Click "Load unpacked"</strong>
+                    <span>Click <strong>Load unpacked</strong> (top-left) and select the extracted extension folder. Done!</span>
+                  </div>
+                </li>
+              </ol>
+
+              <div className="ext-guide-actions">
+                <button
+                  className="ext-download-btn small"
+                  type="button"
+                  onClick={downloadExtensionZip}
+                >
+                  <Icon name="download" size={14} />
+                  <span>Download ZIP Again</span>
+                </button>
+                <button
+                  className="ext-ghost-btn small"
+                  type="button"
+                  onClick={dismissExtensionModal}
+                >
+                  Done / Got it
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+    ) : null}
   </div>;
 }

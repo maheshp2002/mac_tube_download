@@ -6,7 +6,7 @@ export const metadata: Metadata = {
   description: "A private, local-only media downloader and converter.",
 };
 
-export default function RootLayout({ children }: LayoutProps<"/">) {
+export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="en" data-theme="dark">
       <body>{children}</body>
