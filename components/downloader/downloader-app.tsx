@@ -137,7 +137,9 @@ export default function DownloaderApp() {
   }
 
   function downloadExtensionZip() {
-    triggerBrowserDownload("/localdrop-extension.zip", "localdrop-extension.zip");
+    const origin = typeof window !== "undefined" ? window.location.origin : "";
+    const endpoint = origin ? `/api/extension/download?origin=${encodeURIComponent(origin)}` : "/api/extension/download";
+    triggerBrowserDownload(endpoint, "localdrop-extension.zip");
     setShowInstallSteps(true);
   }
 

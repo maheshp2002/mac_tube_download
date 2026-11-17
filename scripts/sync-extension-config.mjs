@@ -18,10 +18,16 @@ export function resolveServerUrl(projectRoot = root) {
     "VERCEL_URL",
   ];
 
+  function isPlaceholder(u) {
+    if (!u) return true;
+    const lower = u.toLowerCase();
+    return lower.includes("your-localdrop-server") || lower.includes("your-cobalt") || lower.includes("example.com");
+  }
+
   // 1. Check process.env first
   for (const name of envVars) {
     let val = process.env[name]?.trim();
-    if (val) {
+    if (val && !isPlaceholder(val)) {
       if (name.startsWith("VERCEL") && !val.startsWith("http://") && !val.startsWith("https://")) {
         val = `https://${val}`;
       }
@@ -41,7 +47,7 @@ export function resolveServerUrl(projectRoot = root) {
         const match = contents.match(regex);
         if (match) {
           let val = (match[1] ?? match[2] ?? match[3]).trim();
-          if (val) {
+          if (val && !isPlaceholder(val)) {
             if (name.startsWith("VERCEL") && !val.startsWith("http://") && !val.startsWith("https://")) {
               val = `https://${val}`;
             }
