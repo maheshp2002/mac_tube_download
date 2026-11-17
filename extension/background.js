@@ -54,14 +54,68 @@ async function handleDownload(payload) {
   const { serverUrl, downloadPayload, filename } = payload;
   const targetUrl = (serverUrl || DEFAULT_SERVER_URL).replace(/\/$/, "");
 
-  // 1. Send request to LocalDrop backend
-  const response = await fetch(`${targetUrl}/api/download`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify(downloadPayload),
-  });
+  const isLocal = targetUrl.includes("localhost") || targetUrl.includes("127.0.0.1");
+  const attempts = isLocal ? [4] : [50, 30, 30]; // 50s, 30s, 30s retry schedule for sleeping cloud servers (Render)
+  let lastError = null;
+  let response = null;
+
+  for (let i = 0; i < attempts.length; i++) {
+    const attemptNum = i + 1;
+    const duration = attempts[i];
+    let secondsLeft = duration;
+
+    const controller = new AbortController();
+    const intervalId = setInterval(() => {
+      secondsLeft--;
+      if (secondsLeft >= 0) {
+        try {
+          chrome.runtime.sendMessage({
+            type: "DOWNLOAD_WAKING_UP",
+            attempt: attemptNum,
+            maxAttempts: attempts.length,
+            secondsLeft,
+            duration,
+          });
+        } catch {}
+      }
+    }, 1000);
+
+    const timerId = setTimeout(() => controller.abort(), duration * 1000);
+
+    try {
+      response = await fetch(`${targetUrl}/api/download`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(downloadPayload),
+        signal: controller.signal,
+      });
+
+      clearTimeout(timerId);
+      clearInterval(intervalId);
+
+      // Render returns 502/503/504 while waking up
+      if (response.status === 502 || response.status === 503 || response.status === 504) {
+        throw new Error(`Server is booting (HTTP ${response.status})`);
+      }
+
+      break; // Successfully connected and received response!
+    } catch (err) {
+      clearTimeout(timerId);
+      clearInterval(intervalId);
+      lastError = err;
+      console.warn(`[LocalDrop] Download connect attempt ${attemptNum}/${attempts.length} failed:`, err.message);
+
+      if (i < attempts.length - 1) {
+        await new Promise((r) => setTimeout(r, 1000));
+      }
+    }
+  }
+
+  if (!response) {
+    throw lastError || new Error(`Could not connect to server at ${targetUrl} after multiple wake-up attempts.`);
+  }
 
   if (!response.ok) {
     const errData = await response.json().catch(() => ({}));

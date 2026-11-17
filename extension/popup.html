@@ -97,6 +97,30 @@
         <button id="btn-retry-inspect" class="btn-retry">Retry Detection</button>
       </div>
 
+      <!-- State 3b: Waking Up Server (Render free tier cold start) -->
+      <div id="state-waking-up" class="waking-up-card hidden">
+        <div class="waking-up-header">
+          <div class="waking-up-pulse">
+            <span class="pulse-ring"></span>
+            <span class="pulse-dot"></span>
+          </div>
+          <div class="waking-up-heading-group">
+            <span class="waking-up-title" id="waking-up-title">Waking up cloud server...</span>
+            <span class="waking-up-sub" id="waking-up-sub">Render free tier sleeps on idle (~50s cold start)</span>
+          </div>
+        </div>
+        <div class="waking-up-timer-bar">
+          <div class="timer-badge">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+            <span id="waking-up-seconds">50s remaining</span>
+          </div>
+          <span id="waking-up-attempt" class="attempt-badge">Attempt 1 of 3</span>
+        </div>
+        <div class="waking-up-track">
+          <div id="waking-up-progress-fill" class="waking-up-fill" style="width: 0%;"></div>
+        </div>
+      </div>
+
       <!-- Download Action Area -->
       <div id="download-actions" class="download-actions hidden">
         <!-- Split Download Button -->

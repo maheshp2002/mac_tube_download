@@ -12,6 +12,12 @@ document.addEventListener("DOMContentLoaded", async () => {
   const stateInspecting = document.getElementById("state-inspecting");
   const stateMedia = document.getElementById("state-media");
   const stateEmpty = document.getElementById("state-empty");
+  const stateWakingUp = document.getElementById("state-waking-up");
+  const wakingUpTitle = document.getElementById("waking-up-title");
+  const wakingUpSub = document.getElementById("waking-up-sub");
+  const wakingUpSeconds = document.getElementById("waking-up-seconds");
+  const wakingUpAttempt = document.getElementById("waking-up-attempt");
+  const wakingUpProgressFill = document.getElementById("waking-up-progress-fill");
   const downloadActions = document.getElementById("download-actions");
   const stateDownloading = document.getElementById("state-downloading");
 
@@ -102,8 +108,76 @@ document.addEventListener("DOMContentLoaded", async () => {
   }
 
   // -------------------------------------------------------------
-  // Tab Inspection
+  // Server Wakeup & Tab Inspection
   // -------------------------------------------------------------
+  const WAKEUP_SCHEDULE = [50, 30, 30]; // 50s, 30s, 30s retry schedule for sleeping cloud servers (e.g. Render)
+
+  async function fetchWithServerWakeup(url, options = {}, onProgress = null) {
+    const isLocal = currentServerUrl.includes("localhost") || currentServerUrl.includes("127.0.0.1");
+    // Localhost fails fast if dev server is off; hosted cloud uses [50, 30, 30] for Render cold start
+    const attempts = isLocal ? [3] : WAKEUP_SCHEDULE;
+    let lastError = null;
+
+    for (let i = 0; i < attempts.length; i++) {
+      const attemptNum = i + 1;
+      const duration = attempts[i];
+      let secondsLeft = duration;
+
+      if (onProgress) {
+        onProgress(attemptNum, attempts.length, secondsLeft, duration);
+      }
+
+      const controller = new AbortController();
+      let timerId = null;
+
+      const intervalId = setInterval(() => {
+        secondsLeft--;
+        if (secondsLeft >= 0 && onProgress) {
+          onProgress(attemptNum, attempts.length, secondsLeft, duration);
+        }
+      }, 1000);
+
+      timerId = setTimeout(() => {
+        controller.abort();
+      }, duration * 1000);
+
+      try {
+        const fetchOptions = {
+          ...options,
+          signal: controller.signal,
+        };
+
+        const res = await fetch(url, fetchOptions);
+        clearTimeout(timerId);
+        clearInterval(intervalId);
+
+        // Render returns 502/503/504 while the free container is booting up
+        if (res.status === 502 || res.status === 503 || res.status === 504) {
+          throw new Error(`Server is booting (HTTP ${res.status})`);
+        }
+
+        return res;
+      } catch (err) {
+        clearTimeout(timerId);
+        clearInterval(intervalId);
+        lastError = err;
+
+        if (options.signal?.aborted) {
+          throw err;
+        }
+
+        console.warn(`[LocalDrop] Server wake-up attempt ${attemptNum}/${attempts.length} failed:`, err.message);
+
+        // Short pause between attempts if not the last
+        if (i < attempts.length - 1) {
+          await new Promise((resolve) => setTimeout(resolve, 1000));
+        }
+      }
+    }
+
+    throw lastError || new Error(`Could not reach server after ${attempts.length} wake-up attempts.`);
+  }
+
   async function inspectCurrentTab() {
     checkServerHealth();
     showState("inspecting");
@@ -126,12 +200,28 @@ document.addEventListener("DOMContentLoaded", async () => {
         return;
       }
 
-      // Fetch metadata from backend
-      const res = await fetch(`${currentServerUrl}/api/metadata`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ url: activeTabUrl }),
-      });
+      // Fetch metadata from backend with 50s / 30s / 30s retry schedule
+      const res = await fetchWithServerWakeup(
+        `${currentServerUrl}/api/metadata`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ url: activeTabUrl }),
+        },
+        (attempt, maxAttempts, secondsLeft, duration) => {
+          showState("waking-up");
+          if (wakingUpSeconds) {
+            wakingUpSeconds.textContent = `${secondsLeft}s remaining`;
+          }
+          if (wakingUpAttempt) {
+            wakingUpAttempt.textContent = `Attempt ${attempt} of ${maxAttempts}`;
+          }
+          if (wakingUpProgressFill) {
+            const pct = Math.min(100, Math.round(((duration - secondsLeft) / duration) * 100));
+            wakingUpProgressFill.style.width = `${pct}%`;
+          }
+        }
+      );
 
       if (!res.ok) {
         const errJson = await res.json().catch(() => ({}));
@@ -149,12 +239,19 @@ document.addEventListener("DOMContentLoaded", async () => {
     } catch (err) {
       console.warn("Inspect failed:", err);
       showState("empty");
-      if (err.message && err.message.includes("Failed to fetch")) {
+      const isNetworkErr =
+        err.message &&
+        (err.message.includes("Failed to fetch") ||
+          err.message.includes("abort") ||
+          err.message.includes("booting") ||
+          err.message.includes("wake-up"));
+
+      if (isNetworkErr) {
         const isLocal = currentServerUrl.includes("localhost") || currentServerUrl.includes("127.0.0.1");
         showToast(
           isLocal
             ? `LocalDrop server offline at ${currentServerUrl}. Run 'pnpm dev'`
-            : `Could not reach LocalDrop server at ${currentServerUrl}`,
+            : `Could not reach LocalDrop server at ${currentServerUrl}. Server did not respond after wake-up retries.`,
           "error"
         );
       } else {
@@ -358,6 +455,16 @@ document.addEventListener("DOMContentLoaded", async () => {
     });
   }
 
+  // Listen for wake-up countdown updates from background service worker during download
+  chrome.runtime.onMessage.addListener((message) => {
+    if (message.type === "DOWNLOAD_WAKING_UP") {
+      downloadStatusLabel.textContent = `Waking up cloud server... (Attempt ${message.attempt} of ${message.maxAttempts})`;
+      downloadPct.textContent = `${message.secondsLeft}s`;
+      const pct = Math.min(100, Math.round(((message.duration - message.secondsLeft) / message.duration) * 100));
+      progressBarFill.style.width = `${pct}%`;
+    }
+  });
+
   btnCancelDownload?.addEventListener("click", () => {
     if (downloadAbortController) {
       downloadAbortController.abort();
@@ -373,6 +480,7 @@ document.addEventListener("DOMContentLoaded", async () => {
     stateInspecting.classList.add("hidden");
     stateMedia.classList.add("hidden");
     stateEmpty.classList.add("hidden");
+    if (stateWakingUp) stateWakingUp.classList.add("hidden");
     downloadActions.classList.add("hidden");
     stateDownloading.classList.add("hidden");
 
@@ -383,6 +491,8 @@ document.addEventListener("DOMContentLoaded", async () => {
       downloadActions.classList.remove("hidden");
     } else if (state === "empty") {
       stateEmpty.classList.remove("hidden");
+    } else if (state === "waking-up") {
+      if (stateWakingUp) stateWakingUp.classList.remove("hidden");
     } else if (state === "downloading") {
       stateMedia.classList.remove("hidden");
       stateDownloading.classList.remove("hidden");

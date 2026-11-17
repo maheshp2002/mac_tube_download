@@ -336,6 +336,111 @@ body {
   cursor: pointer;
 }
 
+/* Waking Up Card */
+.waking-up-card {
+  background: var(--bg-card);
+  border: 1px solid rgba(245, 158, 11, 0.4);
+  border-radius: 10px;
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.waking-up-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.waking-up-pulse {
+  position: relative;
+  width: 16px;
+  height: 16px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.pulse-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background-color: var(--warning);
+}
+
+.pulse-ring {
+  position: absolute;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  border: 2px solid var(--warning);
+  animation: pulse-ring-anim 1.5s cubic-bezier(0.215, 0.61, 0.355, 1) infinite;
+}
+
+@keyframes pulse-ring-anim {
+  0% { transform: scale(0.6); opacity: 0.9; }
+  100% { transform: scale(1.6); opacity: 0; }
+}
+
+.waking-up-heading-group {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.waking-up-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--warning);
+}
+
+.waking-up-sub {
+  font-size: 10px;
+  color: var(--text-muted);
+}
+
+.waking-up-timer-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.timer-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-main);
+  background: rgba(245, 158, 11, 0.15);
+  border: 1px solid rgba(245, 158, 11, 0.3);
+  padding: 2px 7px;
+  border-radius: 6px;
+}
+
+.attempt-badge {
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--text-dim);
+  text-transform: uppercase;
+}
+
+.waking-up-track {
+  width: 100%;
+  height: 4px;
+  background: #1e293b;
+  border-radius: 999px;
+  overflow: hidden;
+}
+
+.waking-up-fill {
+  height: 100%;
+  background: var(--warning);
+  transition: width 0.3s ease;
+}
+
 /* Split Download Button */
 .split-btn-container {
   display: flex;
