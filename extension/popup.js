@@ -98,23 +98,41 @@ document.addEventListener("DOMContentLoaded", async () => {
     inspectCurrentTab();
   });
 
+  async function probeServerOnline(timeoutMs = 3500) {
+    try {
+      // First attempt fast GET /api/metadata (returns { status: "ok" })
+      const res = await fetchWithTimeout(
+        `${currentServerUrl}/api/metadata`,
+        { method: "GET" },
+        timeoutMs
+      );
+      return res && res.ok && res.status !== 502 && res.status !== 503 && res.status !== 504;
+    } catch {
+      // Fallback try with OPTIONS
+      try {
+        const optRes = await fetchWithTimeout(
+          `${currentServerUrl}/api/metadata`,
+          { method: "OPTIONS" },
+          timeoutMs
+        );
+        return optRes && (optRes.status === 200 || optRes.status === 204);
+      } catch {
+        return false;
+      }
+    }
+  }
+
   async function checkServerHealth() {
     serverStatusDot.className = "status-dot status-checking";
-    try {
-      const res = await fetch(`${currentServerUrl}/api/metadata`, {
-        method: "OPTIONS",
-      }).catch(() => null);
-      if (res && (res.status === 200 || res.status === 204)) {
-        serverStatusDot.className = "status-dot status-online";
-        serverStatusDot.title = "Connected to LocalDrop Server";
-      } else {
-        // Fallback test with sample head or simple check
-        serverStatusDot.className = "status-dot status-online";
-      }
-    } catch {
+    const online = await probeServerOnline(3500);
+    if (online) {
+      serverStatusDot.className = "status-dot status-online";
+      serverStatusDot.title = "Connected to LocalDrop Server";
+    } else {
       serverStatusDot.className = "status-dot status-offline";
-      serverStatusDot.title = `Server offline (${currentServerUrl})`;
+      serverStatusDot.title = `Server offline or sleeping (${currentServerUrl})`;
     }
+    return online;
   }
 
   // -------------------------------------------------------------
@@ -136,9 +154,8 @@ document.addEventListener("DOMContentLoaded", async () => {
     }
   }
 
-  async function runAutonomousWakeupRetry(url, options = {}) {
+  async function waitForServerWakeup() {
     const attempts = WAKEUP_SCHEDULE; // [50, 30, 30]
-    let lastError = null;
 
     for (let i = 0; i < attempts.length; i++) {
       const attemptNum = i + 1;
@@ -156,7 +173,8 @@ document.addEventListener("DOMContentLoaded", async () => {
       }
 
       // Live countdown ticker every second
-      const ticker = setInterval(() => {
+      let ticker = null;
+      ticker = setInterval(() => {
         secondsLeft--;
         if (secondsLeft >= 0) {
           if (wakingUpSeconds) wakingUpSeconds.textContent = `${secondsLeft}s remaining`;
@@ -167,37 +185,35 @@ document.addEventListener("DOMContentLoaded", async () => {
         }
       }, 1000);
 
-      // Periodically attempt connection during this attempt's duration
+      // Periodically probe the server during this attempt's duration
       const startTime = Date.now();
       const endTime = startTime + duration * 1000;
 
       while (Date.now() < endTime) {
-        try {
-          const res = await fetchWithTimeout(url, options, 6000);
-          if (res && res.status !== 502 && res.status !== 503 && res.status !== 504) {
-            clearInterval(ticker);
-            return res; // Server is awake and responded!
-          }
-        } catch (pingErr) {
-          lastError = pingErr;
+        // Fast, lightweight health probe (never triggers heavy yt-dlp)
+        const isUp = await probeServerOnline(3000);
+        if (isUp) {
+          clearInterval(ticker);
+          serverStatusDot.className = "status-dot status-online";
+          serverStatusDot.title = "Connected to LocalDrop Server";
+          return true; // Server is confirmed awake! Break out immediately.
         }
 
-        // Wait 3.5s before next ping in this window
-        await new Promise((resolve) => setTimeout(resolve, 3500));
+        // Wait 2.5s before next ping in this window
+        await new Promise((resolve) => setTimeout(resolve, 2500));
       }
 
       clearInterval(ticker);
-      console.warn(`[LocalDrop] Server wake-up attempt ${attemptNum} completed without response.`);
+      console.warn(`[LocalDrop] Server wake-up attempt ${attemptNum} timed out without response.`);
     }
 
-    throw lastError || new Error(`Cloud server unreachable after ${attempts.length} wake-up attempts.`);
+    return false; // Server did not wake up after all attempts
   }
 
   async function inspectCurrentTab() {
-    checkServerHealth();
     showState("inspecting");
     if (skeletonHint) {
-      skeletonHint.textContent = "Analyzing media on page...";
+      skeletonHint.textContent = "Connecting to server...";
     }
 
     try {
@@ -218,11 +234,46 @@ document.addEventListener("DOMContentLoaded", async () => {
         return;
       }
 
-      // Step 1: Normal fetch while keeping the skeleton loader visible
-      // (Even if Render is taking 3-10s to extract an Instagram reel or video)
-      let res = null;
-      let isServerSleeping = false;
+      const isLocal = currentServerUrl.includes("localhost") || currentServerUrl.includes("127.0.0.1");
 
+      // Step 1: Fast liveness check to see if server is already awake or sleeping
+      let isServerAwake = await probeServerOnline(3500);
+
+      if (!isServerAwake) {
+        if (isLocal) {
+          serverStatusDot.className = "status-dot status-offline";
+          showState("empty");
+          showToast(`LocalDrop server offline at ${currentServerUrl}. Run 'pnpm dev'`, "error");
+          return;
+        }
+
+        // Step 2: Server is asleep on cloud host (Render cold start) -> Show autonomous retry view
+        serverStatusDot.className = "status-dot status-checking";
+        serverStatusDot.title = "Server sleeping (Render cold start)...";
+        showState("waking-up");
+
+        isServerAwake = await waitForServerWakeup();
+
+        if (!isServerAwake) {
+          // Cloud server did not respond after all 3 attempts
+          serverStatusDot.className = "status-dot status-offline";
+          serverStatusDot.title = `Server offline (${currentServerUrl})`;
+          showState("empty");
+          showToast(`Could not reach LocalDrop server at ${currentServerUrl}. Server did not respond after wake-up retries.`, "error");
+          return;
+        }
+      }
+
+      // Step 3: Server is confirmed online! Now extract media metadata
+      serverStatusDot.className = "status-dot status-online";
+      serverStatusDot.title = "Connected to LocalDrop Server";
+
+      showState("inspecting");
+      if (skeletonHint) {
+        skeletonHint.textContent = "Server awake! Extracting media details...";
+      }
+
+      let res = null;
       try {
         res = await fetchWithTimeout(
           `${currentServerUrl}/api/metadata`,
@@ -231,44 +282,27 @@ document.addEventListener("DOMContentLoaded", async () => {
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ url: activeTabUrl }),
           },
-          25000
+          35000 // Generous 35s timeout so yt-dlp has ample time on cloud containers
         );
-
-        if (res.status === 502 || res.status === 503 || res.status === 504) {
-          isServerSleeping = true;
-        }
-      } catch (connErr) {
-        console.warn("[LocalDrop] Initial server fetch failed:", connErr.message);
-        isServerSleeping = true;
+      } catch (fetchErr) {
+        showState("empty");
+        showToast(`Extraction request failed: ${fetchErr.message}`, "error");
+        return;
       }
 
-      // Step 2: If server is unreachable or sleeping (Render cold start), enter the autonomous retry view
-      if (isServerSleeping || !res || (!res.ok && [502, 503, 504].includes(res.status))) {
-        const isLocal = currentServerUrl.includes("localhost") || currentServerUrl.includes("127.0.0.1");
-        if (isLocal) {
-          throw new Error("Failed to fetch");
-        }
-
-        // Show the waking-up countdown view
-        showState("waking-up");
-
-        // Automatically retries 50s -> 30s -> 30s without requiring user clicks
-        res = await runAutonomousWakeupRetry(`${currentServerUrl}/api/metadata`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ url: activeTabUrl }),
-        });
-      }
-
-      // Step 3: Handle the successful response
+      // Step 4: Handle the metadata response
       if (!res.ok) {
         const errJson = await res.json().catch(() => ({}));
-        throw new Error(errJson.message || "No downloadable video detected on this page.");
+        showState("empty");
+        showToast(errJson.message || "No downloadable video detected on this page.", "error");
+        return;
       }
 
       const data = await res.json();
       if (!data.media) {
-        throw new Error("No media formats available.");
+        showState("empty");
+        showToast("No media formats available.", "error");
+        return;
       }
 
       activeMedia = data.media;
@@ -276,27 +310,8 @@ document.addEventListener("DOMContentLoaded", async () => {
       showState("media");
     } catch (err) {
       console.warn("Inspect failed:", err);
-      // Only now show the empty state with the retry button
       showState("empty");
-      const isNetworkErr =
-        err.message &&
-        (err.message.includes("Failed to fetch") ||
-          err.message.includes("abort") ||
-          err.message.includes("booting") ||
-          err.message.includes("unreachable") ||
-          err.message.includes("wake-up"));
-
-      if (isNetworkErr) {
-        const isLocal = currentServerUrl.includes("localhost") || currentServerUrl.includes("127.0.0.1");
-        showToast(
-          isLocal
-            ? `LocalDrop server offline at ${currentServerUrl}. Run 'pnpm dev'`
-            : `Could not reach LocalDrop server at ${currentServerUrl}. Server did not respond after wake-up retries.`,
-          "error"
-        );
-      } else {
-        showToast(err.message || "No downloadable media detected on this page.", "error");
-      }
+      showToast(err.message || "Failed to inspect page.", "error");
     }
   }
 

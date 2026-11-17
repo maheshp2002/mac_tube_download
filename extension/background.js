@@ -74,85 +74,98 @@ function updateToolbarTheme(isDark) {
   }
 }
 
-async function handleDownload(payload) {
-  const { serverUrl, downloadPayload, filename } = payload;
-  const targetUrl = (serverUrl || DEFAULT_SERVER_URL).replace(/\/$/, "");
+async function probeServerOnline(targetUrl, timeoutMs = 3000) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const res = await fetch(`${targetUrl}/api/metadata`, {
+      method: "GET",
+      signal: controller.signal,
+    });
+    clearTimeout(timer);
+    return res && res.ok && res.status !== 502 && res.status !== 503 && res.status !== 504;
+  } catch {
+    clearTimeout(timer);
+    try {
+      const optController = new AbortController();
+      const optTimer = setTimeout(() => optController.abort(), timeoutMs);
+      const optRes = await fetch(`${targetUrl}/api/metadata`, {
+        method: "OPTIONS",
+        signal: optController.signal,
+      });
+      clearTimeout(optTimer);
+      return optRes && (optRes.status === 200 || optRes.status === 204);
+    } catch {
+      return false;
+    }
+  }
+}
 
-  const isLocal = targetUrl.includes("localhost") || targetUrl.includes("127.0.0.1");
-  const attempts = isLocal ? [1] : [50, 30, 30]; // 50s, 30s, 30s retry schedule for sleeping cloud servers (Render)
-  let lastError = null;
-  let response = null;
+async function waitForServerWakeup(targetUrl) {
+  const attempts = [50, 30, 30];
 
   for (let i = 0; i < attempts.length; i++) {
     const attemptNum = i + 1;
     const duration = attempts[i];
     let secondsLeft = duration;
 
-    // Only broadcast waking-up state if we are actually retrying (i > 0)
-    let intervalId = null;
-    if (i > 0) {
-      intervalId = setInterval(() => {
-        secondsLeft--;
-        if (secondsLeft >= 0) {
-          try {
-            chrome.runtime.sendMessage({
-              type: "DOWNLOAD_WAKING_UP",
-              attempt: attemptNum,
-              maxAttempts: attempts.length,
-              secondsLeft,
-              duration,
-            });
-          } catch {}
-        }
-      }, 1000);
-    }
-
-    const controller = new AbortController();
-    const timerId = setTimeout(() => controller.abort(), duration * 1000);
-
-    try {
-      response = await fetch(`${targetUrl}/api/download`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify(downloadPayload),
-        signal: controller.signal,
-      });
-
-      clearTimeout(timerId);
-      if (intervalId) clearInterval(intervalId);
-
-      // Render returns 502/503/504 while waking up
-      if (response.status === 502 || response.status === 503 || response.status === 504) {
-        throw new Error(`Server is booting (HTTP ${response.status})`);
-      }
-
-      break; // Successfully connected and received response!
-    } catch (err) {
-      clearTimeout(timerId);
-      if (intervalId) clearInterval(intervalId);
-      lastError = err;
-      console.warn(`[LocalDrop] Download connect attempt ${attemptNum}/${attempts.length} failed:`, err.message);
-
-      if (i < attempts.length - 1) {
+    let intervalId = setInterval(() => {
+      secondsLeft--;
+      if (secondsLeft >= 0) {
         try {
           chrome.runtime.sendMessage({
             type: "DOWNLOAD_WAKING_UP",
-            attempt: attemptNum + 1,
+            attempt: attemptNum,
             maxAttempts: attempts.length,
-            secondsLeft: attempts[i + 1],
-            duration: attempts[i + 1],
+            secondsLeft,
+            duration,
           });
         } catch {}
-        await new Promise((r) => setTimeout(r, 1000));
+      }
+    }, 1000);
+
+    const startTime = Date.now();
+    const endTime = startTime + duration * 1000;
+
+    while (Date.now() < endTime) {
+      const isUp = await probeServerOnline(targetUrl, 2500);
+      if (isUp) {
+        clearInterval(intervalId);
+        return true;
+      }
+      await new Promise((r) => setTimeout(r, 2500));
+    }
+
+    clearInterval(intervalId);
+    console.warn(`[LocalDrop] Download wake-up attempt ${attemptNum} timed out.`);
+  }
+
+  return false;
+}
+
+async function handleDownload(payload) {
+  const { serverUrl, downloadPayload, filename } = payload;
+  const targetUrl = (serverUrl || DEFAULT_SERVER_URL).replace(/\/$/, "");
+  const isLocal = targetUrl.includes("localhost") || targetUrl.includes("127.0.0.1");
+
+  // If remote and server might be asleep, verify connection or wake up
+  if (!isLocal) {
+    const isUp = await probeServerOnline(targetUrl, 3000);
+    if (!isUp) {
+      const awake = await waitForServerWakeup(targetUrl);
+      if (!awake) {
+        throw new Error(`Could not connect to server at ${targetUrl}. Server did not wake up after 3 attempts.`);
       }
     }
   }
 
-  if (!response) {
-    throw lastError || new Error(`Could not connect to server at ${targetUrl} after multiple wake-up attempts.`);
-  }
+  const response = await fetch(`${targetUrl}/api/download`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(downloadPayload),
+  });
 
   if (!response.ok) {
     const errData = await response.json().catch(() => ({}));

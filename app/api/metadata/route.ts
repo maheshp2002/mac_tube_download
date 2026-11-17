@@ -5,7 +5,7 @@ export const runtime = "nodejs";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+  "Access-Control-Allow-Methods": "GET, POST, OPTIONS, HEAD",
   "Access-Control-Allow-Headers": "Content-Type, Authorization",
 };
 
@@ -14,6 +14,17 @@ export async function OPTIONS() {
     status: 204,
     headers: corsHeaders,
   });
+}
+
+export async function HEAD() {
+  return new Response(null, {
+    status: 200,
+    headers: corsHeaders,
+  });
+}
+
+export async function GET() {
+  return Response.json({ status: "ok" }, { headers: corsHeaders });
 }
 
 export async function POST(request: Request) {
