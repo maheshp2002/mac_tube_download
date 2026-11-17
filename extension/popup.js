@@ -1,5 +1,8 @@
 // LocalDrop Popup Script
 
+// 50s, 30s, 30s retry schedule for sleeping cloud servers (Render free tier cold start)
+const WAKEUP_SCHEDULE = [50, 30, 30];
+
 document.addEventListener("DOMContentLoaded", async () => {
   // Elements
   const serverStatusDot = document.getElementById("server-status-dot");
@@ -10,6 +13,7 @@ document.addEventListener("DOMContentLoaded", async () => {
 
   const activeUrlDisplay = document.getElementById("active-url-display");
   const stateInspecting = document.getElementById("state-inspecting");
+  const skeletonHint = document.getElementById("skeleton-hint");
   const stateMedia = document.getElementById("state-media");
   const stateEmpty = document.getElementById("state-empty");
   const stateWakingUp = document.getElementById("state-waking-up");
@@ -116,12 +120,24 @@ document.addEventListener("DOMContentLoaded", async () => {
   // -------------------------------------------------------------
   // Server Wakeup & Tab Inspection
   // -------------------------------------------------------------
-  const WAKEUP_SCHEDULE = [50, 30, 30]; // 50s, 30s, 30s retry schedule for sleeping cloud servers (e.g. Render)
+  async function fetchWithTimeout(url, options = {}, timeoutMs = 25000) {
+    const controller = new AbortController();
+    const timerId = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      const res = await fetch(url, {
+        ...options,
+        signal: controller.signal,
+      });
+      clearTimeout(timerId);
+      return res;
+    } catch (err) {
+      clearTimeout(timerId);
+      throw err;
+    }
+  }
 
-  async function fetchWithServerWakeup(url, options = {}, onProgress = null) {
-    const isLocal = currentServerUrl.includes("localhost") || currentServerUrl.includes("127.0.0.1");
-    // Localhost fails fast if dev server is off; hosted cloud uses [50, 30, 30] for Render cold start
-    const attempts = isLocal ? [3] : WAKEUP_SCHEDULE;
+  async function runAutonomousWakeupRetry(url, options = {}) {
+    const attempts = WAKEUP_SCHEDULE; // [50, 30, 30]
     let lastError = null;
 
     for (let i = 0; i < attempts.length; i++) {
@@ -129,64 +145,60 @@ document.addEventListener("DOMContentLoaded", async () => {
       const duration = attempts[i];
       let secondsLeft = duration;
 
-      if (onProgress) {
-        onProgress(attemptNum, attempts.length, secondsLeft, duration);
+      if (wakingUpAttempt) {
+        wakingUpAttempt.textContent = `Attempt ${attemptNum} of ${attempts.length}`;
+      }
+      if (wakingUpSeconds) {
+        wakingUpSeconds.textContent = `${secondsLeft}s remaining`;
+      }
+      if (wakingUpProgressFill) {
+        wakingUpProgressFill.style.width = "0%";
       }
 
-      const controller = new AbortController();
-      let timerId = null;
-
-      const intervalId = setInterval(() => {
+      // Live countdown ticker every second
+      const ticker = setInterval(() => {
         secondsLeft--;
-        if (secondsLeft >= 0 && onProgress) {
-          onProgress(attemptNum, attempts.length, secondsLeft, duration);
+        if (secondsLeft >= 0) {
+          if (wakingUpSeconds) wakingUpSeconds.textContent = `${secondsLeft}s remaining`;
+          if (wakingUpProgressFill) {
+            const pct = Math.min(100, Math.round(((duration - secondsLeft) / duration) * 100));
+            wakingUpProgressFill.style.width = `${pct}%`;
+          }
         }
       }, 1000);
 
-      timerId = setTimeout(() => {
-        controller.abort();
-      }, duration * 1000);
+      // Periodically attempt connection during this attempt's duration
+      const startTime = Date.now();
+      const endTime = startTime + duration * 1000;
 
-      try {
-        const fetchOptions = {
-          ...options,
-          signal: controller.signal,
-        };
-
-        const res = await fetch(url, fetchOptions);
-        clearTimeout(timerId);
-        clearInterval(intervalId);
-
-        // Render returns 502/503/504 while the free container is booting up
-        if (res.status === 502 || res.status === 503 || res.status === 504) {
-          throw new Error(`Server is booting (HTTP ${res.status})`);
+      while (Date.now() < endTime) {
+        try {
+          const res = await fetchWithTimeout(url, options, 6000);
+          if (res && res.status !== 502 && res.status !== 503 && res.status !== 504) {
+            clearInterval(ticker);
+            return res; // Server is awake and responded!
+          }
+        } catch (pingErr) {
+          lastError = pingErr;
         }
 
-        return res;
-      } catch (err) {
-        clearTimeout(timerId);
-        clearInterval(intervalId);
-        lastError = err;
-
-        if (options.signal?.aborted) {
-          throw err;
-        }
-
-        console.warn(`[LocalDrop] Server wake-up attempt ${attemptNum}/${attempts.length} failed:`, err.message);
-
-        // Short pause between attempts if not the last
-        if (i < attempts.length - 1) {
-          await new Promise((resolve) => setTimeout(resolve, 1000));
-        }
+        // Wait 3.5s before next ping in this window
+        await new Promise((resolve) => setTimeout(resolve, 3500));
       }
+
+      clearInterval(ticker);
+      console.warn(`[LocalDrop] Server wake-up attempt ${attemptNum} completed without response.`);
     }
 
-    throw lastError || new Error(`Could not reach server after ${attempts.length} wake-up attempts.`);
+    throw lastError || new Error(`Cloud server unreachable after ${attempts.length} wake-up attempts.`);
   }
 
   async function inspectCurrentTab() {
     checkServerHealth();
     showState("inspecting");
+    if (skeletonHint) {
+      skeletonHint.textContent = "Analyzing media on page...";
+    }
 
     try {
       const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
@@ -206,29 +218,49 @@ document.addEventListener("DOMContentLoaded", async () => {
         return;
       }
 
-      // Fetch metadata from backend with 50s / 30s / 30s retry schedule
-      const res = await fetchWithServerWakeup(
-        `${currentServerUrl}/api/metadata`,
-        {
+      // Step 1: Normal fetch while keeping the skeleton loader visible
+      // (Even if Render is taking 3-10s to extract an Instagram reel or video)
+      let res = null;
+      let isServerSleeping = false;
+
+      try {
+        res = await fetchWithTimeout(
+          `${currentServerUrl}/api/metadata`,
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ url: activeTabUrl }),
+          },
+          25000
+        );
+
+        if (res.status === 502 || res.status === 503 || res.status === 504) {
+          isServerSleeping = true;
+        }
+      } catch (connErr) {
+        console.warn("[LocalDrop] Initial server fetch failed:", connErr.message);
+        isServerSleeping = true;
+      }
+
+      // Step 2: If server is unreachable or sleeping (Render cold start), enter the autonomous retry view
+      if (isServerSleeping || !res || (!res.ok && [502, 503, 504].includes(res.status))) {
+        const isLocal = currentServerUrl.includes("localhost") || currentServerUrl.includes("127.0.0.1");
+        if (isLocal) {
+          throw new Error("Failed to fetch");
+        }
+
+        // Show the waking-up countdown view
+        showState("waking-up");
+
+        // Automatically retries 50s -> 30s -> 30s without requiring user clicks
+        res = await runAutonomousWakeupRetry(`${currentServerUrl}/api/metadata`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ url: activeTabUrl }),
-        },
-        (attempt, maxAttempts, secondsLeft, duration) => {
-          showState("waking-up");
-          if (wakingUpSeconds) {
-            wakingUpSeconds.textContent = `${secondsLeft}s remaining`;
-          }
-          if (wakingUpAttempt) {
-            wakingUpAttempt.textContent = `Attempt ${attempt} of ${maxAttempts}`;
-          }
-          if (wakingUpProgressFill) {
-            const pct = Math.min(100, Math.round(((duration - secondsLeft) / duration) * 100));
-            wakingUpProgressFill.style.width = `${pct}%`;
-          }
-        }
-      );
+        });
+      }
 
+      // Step 3: Handle the successful response
       if (!res.ok) {
         const errJson = await res.json().catch(() => ({}));
         throw new Error(errJson.message || "No downloadable video detected on this page.");
@@ -244,12 +276,14 @@ document.addEventListener("DOMContentLoaded", async () => {
       showState("media");
     } catch (err) {
       console.warn("Inspect failed:", err);
+      // Only now show the empty state with the retry button
       showState("empty");
       const isNetworkErr =
         err.message &&
         (err.message.includes("Failed to fetch") ||
           err.message.includes("abort") ||
           err.message.includes("booting") ||
+          err.message.includes("unreachable") ||
           err.message.includes("wake-up"));
 
       if (isNetworkErr) {

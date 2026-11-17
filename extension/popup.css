@@ -223,6 +223,12 @@ body {
 }
 .skeleton-line.long { width: 85%; }
 .skeleton-line.short { width: 45%; }
+.skeleton-hint {
+  font-size: 11px;
+  color: var(--text-muted);
+  margin-top: 2px;
+  animation: pulse 1.4s infinite;
+}
 
 @keyframes pulse {
   0%, 100% { opacity: 0.6; }

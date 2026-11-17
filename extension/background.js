@@ -79,7 +79,7 @@ async function handleDownload(payload) {
   const targetUrl = (serverUrl || DEFAULT_SERVER_URL).replace(/\/$/, "");
 
   const isLocal = targetUrl.includes("localhost") || targetUrl.includes("127.0.0.1");
-  const attempts = isLocal ? [4] : [50, 30, 30]; // 50s, 30s, 30s retry schedule for sleeping cloud servers (Render)
+  const attempts = isLocal ? [1] : [50, 30, 30]; // 50s, 30s, 30s retry schedule for sleeping cloud servers (Render)
   let lastError = null;
   let response = null;
 
@@ -88,22 +88,26 @@ async function handleDownload(payload) {
     const duration = attempts[i];
     let secondsLeft = duration;
 
-    const controller = new AbortController();
-    const intervalId = setInterval(() => {
-      secondsLeft--;
-      if (secondsLeft >= 0) {
-        try {
-          chrome.runtime.sendMessage({
-            type: "DOWNLOAD_WAKING_UP",
-            attempt: attemptNum,
-            maxAttempts: attempts.length,
-            secondsLeft,
-            duration,
-          });
-        } catch {}
-      }
-    }, 1000);
+    // Only broadcast waking-up state if we are actually retrying (i > 0)
+    let intervalId = null;
+    if (i > 0) {
+      intervalId = setInterval(() => {
+        secondsLeft--;
+        if (secondsLeft >= 0) {
+          try {
+            chrome.runtime.sendMessage({
+              type: "DOWNLOAD_WAKING_UP",
+              attempt: attemptNum,
+              maxAttempts: attempts.length,
+              secondsLeft,
+              duration,
+            });
+          } catch {}
+        }
+      }, 1000);
+    }
 
+    const controller = new AbortController();
     const timerId = setTimeout(() => controller.abort(), duration * 1000);
 
     try {
@@ -117,7 +121,7 @@ async function handleDownload(payload) {
       });
 
       clearTimeout(timerId);
-      clearInterval(intervalId);
+      if (intervalId) clearInterval(intervalId);
 
       // Render returns 502/503/504 while waking up
       if (response.status === 502 || response.status === 503 || response.status === 504) {
@@ -127,11 +131,20 @@ async function handleDownload(payload) {
       break; // Successfully connected and received response!
     } catch (err) {
       clearTimeout(timerId);
-      clearInterval(intervalId);
+      if (intervalId) clearInterval(intervalId);
       lastError = err;
       console.warn(`[LocalDrop] Download connect attempt ${attemptNum}/${attempts.length} failed:`, err.message);
 
       if (i < attempts.length - 1) {
+        try {
+          chrome.runtime.sendMessage({
+            type: "DOWNLOAD_WAKING_UP",
+            attempt: attemptNum + 1,
+            maxAttempts: attempts.length,
+            secondsLeft: attempts[i + 1],
+            duration: attempts[i + 1],
+          });
+        } catch {}
         await new Promise((r) => setTimeout(r, 1000));
       }
     }
