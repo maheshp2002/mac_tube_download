@@ -106,5 +106,21 @@
       .replace(/>/g, "&gt;")
       .replace(/"/g, "&quot;");
   }
+
+  // 4. Report browser theme preference to background service worker for dynamic icon adaptation
+  try {
+    const themeMedia = window.matchMedia("(prefers-color-scheme: dark)");
+    const reportTheme = (isDark) => {
+      chrome.runtime.sendMessage({
+        type: "THEME_CHANGED",
+        isDark: typeof isDark === "boolean" ? isDark : themeMedia.matches,
+      }).catch(() => {});
+    };
+
+    reportTheme(themeMedia.matches);
+    themeMedia.addEventListener("change", (e) => reportTheme(e.matches));
+  } catch {
+    // Ignored
+  }
 })();
 

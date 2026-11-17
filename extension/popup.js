@@ -66,6 +66,12 @@ document.addEventListener("DOMContentLoaded", async () => {
   // 1. Load preferences
   await loadPreferences();
 
+  // Sync toolbar icon with browser theme
+  try {
+    const isDarkTheme = window.matchMedia("(prefers-color-scheme: dark)").matches;
+    chrome.runtime.sendMessage({ type: "THEME_CHANGED", isDark: isDarkTheme }).catch(() => {});
+  } catch {}
+
   // 2. Query Active Tab & Inspect
   await inspectCurrentTab();
 

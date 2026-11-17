@@ -38,6 +38,13 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     return true; // Keep channel open for async response
   }
 
+  // Update toolbar icon to match browser/OS theme (light or dark)
+  if (request.type === "THEME_CHANGED" && typeof request.isDark === "boolean") {
+    updateToolbarTheme(request.isDark);
+    sendResponse({ success: true });
+    return true;
+  }
+
   // Auto-sync server URL from active web app
   if (request.type === "SYNC_SERVER_URL" && request.serverUrl) {
     chrome.storage.local.get(["serverUrl"], (res) => {
@@ -49,6 +56,23 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     return true;
   }
 });
+
+// Dynamic theme adaptation for toolbar icon
+function updateToolbarTheme(isDark) {
+  const variant = isDark ? "light" : "dark";
+  try {
+    chrome.action.setIcon({
+      path: {
+        "16": `icons/icon-16-${variant}.png`,
+        "32": `icons/icon-32-${variant}.png`,
+        "48": `icons/icon-48-${variant}.png`,
+        "128": `icons/icon-128-${variant}.png`,
+      },
+    });
+  } catch (err) {
+    console.warn("[LocalDrop] Failed to update toolbar icon theme:", err);
+  }
+}
 
 async function handleDownload(payload) {
   const { serverUrl, downloadPayload, filename } = payload;
